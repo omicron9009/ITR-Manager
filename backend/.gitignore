@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Docker
+*.log
+
+# Alembic
+alembic/versions/*.pyc
+
+# Credentials (sensitive)
+credentials/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# MinIO local data
+/data/
