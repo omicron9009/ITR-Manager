@@ -49,6 +49,9 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
+# ─── Volumes for persistent data ─────────────────────────────
+VOLUME ["/var/lib/postgresql/data", "/data/minio"]
+
 EXPOSE 8000 5432 9000 9001
 
 CMD ["/start.sh"]

@@ -13,9 +13,9 @@ pydantic==2.7.4
 pydantic-settings==2.3.3
 email-validator==2.1.1
 
-# Authentication (Authentik JWT validation)
+# Authentication (Local JWT + password hashing)
 python-jose[cryptography]==3.3.0
-httpx==0.27.0
+bcrypt>=4.0.0
 
 # Object Storage (MinIO)
 minio==7.2.7

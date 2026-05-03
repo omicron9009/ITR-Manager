@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_partner, get_current_user
+from app.core.security import get_current_executive_or_partner, get_current_partner, get_current_user, hash_password
 from app.database import get_db
 from app.enums import AccountStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -42,7 +42,7 @@ async def register_new_client(
         db=db,
         email=request_data.email,
         full_name=request_data.full_name,
-        authentik_subject_id=request_data.authentik_subject_id,
+        password_hash=hash_password(request_data.password),
     )
     return ClientRegistrationResponse(
         id=user.id,
@@ -57,10 +57,10 @@ async def register_new_client(
 async def activate_client_account(
     body: ClientActivationRequest,
     request: Request,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Activate a client account (Partner only)."""
+    """Activate a client account (Partner or Executive)."""
     client = await activate_client(
         db=db,
         client_id=body.client_id,
@@ -75,10 +75,10 @@ async def activate_client_account(
 async def reject_client_account(
     body: ClientRejectionRequest,
     request: Request,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Reject a client registration (Partner only)."""
+    """Reject a client registration (Partner or Executive)."""
     client = await reject_client(
         db=db,
         client_id=body.client_id,

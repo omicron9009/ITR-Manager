@@ -43,12 +43,15 @@ class Settings(BaseSettings):
     MINIO_BUCKET_NAME: str = "itr-documents"
     MINIO_USE_SSL: bool = False
 
-    # Authentik
-    AUTHENTIK_BASE_URL: str = ""
-    AUTHENTIK_JWKS_URL: str = ""
-    AUTHENTIK_ISSUER: str = ""
-    AUTHENTIK_CLIENT_ID: str = ""
-    AUTHENTIK_AUDIENCE: str = ""
+    # JWT Authentication
+    JWT_SECRET_KEY: str = "CHANGE-ME-TO-A-RANDOM-SECRET"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+
+    # Admin seed (created on first startup)
+    ADMIN_EMAIL: str = "admin@itr-platform.com"
+    ADMIN_PASSWORD: str = "admin123"
+    ADMIN_FULL_NAME: str = "Platform Admin"
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000"]

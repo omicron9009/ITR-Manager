@@ -18,14 +18,14 @@ async def register_client(
     db: AsyncSession,
     email: str,
     full_name: str,
-    authentik_subject_id: str,
+    password_hash: str,
     pan_document_id: Optional[UUID] = None,
 ) -> User:
     """Register a new client. Account starts in PENDING_VERIFICATION."""
     user = User(
         email=email,
         full_name=full_name,
-        authentik_subject_id=authentik_subject_id,
+        password_hash=password_hash,
         role=UserRole.CLIENT,
         account_status=AccountStatus.PENDING_VERIFICATION,
         pan_document_id=pan_document_id,
