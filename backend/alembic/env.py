@@ -14,7 +14,7 @@ from app.models import filing_completed_doc, filing_state_history, notification,
 from app.database import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", settings.POSTGRES_URL)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
