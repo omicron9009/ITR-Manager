@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, String, Text
+from sqlalchemy import Boolean, Column, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.database import Base
@@ -18,6 +18,7 @@ class EmailConfig(Base):
     token_json = Column(Text, nullable=True)  # Encrypted OAuth token JSON (after auth)
     configured_by = Column(UUID(as_uuid=True), nullable=False)
     is_active = Column(
+        Boolean,
         # Only one active config at a time
         default=True,
     )

@@ -1,11 +1,11 @@
-"""Core — Security: JWT validation via Authentik JWKS."""
+"""Core — Security: Local JWT authentication with password hashing."""
 
-from typing import Optional
+from datetime import datetime, timedelta
 from uuid import UUID
 
-import httpx
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+import bcrypt
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,60 +17,35 @@ from app.models.user import User
 
 security_scheme = HTTPBearer()
 
-# Cache JWKS keys in memory
-_jwks_cache: Optional[dict] = None
+
+def hash_password(password: str) -> str:
+    """Hash a plaintext password using bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
-async def get_jwks() -> dict:
-    """Fetch and cache JWKS from Authentik."""
-    global _jwks_cache
-    if _jwks_cache is None:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(settings.AUTHENTIK_JWKS_URL)
-            response.raise_for_status()
-            _jwks_cache = response.json()
-    return _jwks_cache
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plaintext password against its hash."""
+    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
 
-def invalidate_jwks_cache():
-    """Invalidate cached JWKS keys (call on key rotation)."""
-    global _jwks_cache
-    _jwks_cache = None
+def create_access_token(subject_id: UUID, role: str) -> str:
+    """Create a signed JWT access token."""
+    expire = datetime.utcnow() + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {
+        "sub": str(subject_id),
+        "role": role,
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-async def decode_token(token: str) -> dict:
-    """Decode and validate a JWT token against Authentik's JWKS."""
+def decode_token(token: str) -> dict:
+    """Decode and validate a locally-issued JWT token."""
     try:
-        jwks = await get_jwks()
-        # Extract unverified header to find matching key
-        unverified_header = jwt.get_unverified_header(token)
-        rsa_key = {}
-        for key in jwks.get("keys", []):
-            if key.get("kid") == unverified_header.get("kid"):
-                rsa_key = key
-                break
-
-        if not rsa_key:
-            # Try refreshing JWKS cache
-            invalidate_jwks_cache()
-            jwks = await get_jwks()
-            for key in jwks.get("keys", []):
-                if key.get("kid") == unverified_header.get("kid"):
-                    rsa_key = key
-                    break
-
-        if not rsa_key:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unable to find matching key for token validation",
-            )
-
         payload = jwt.decode(
             token,
-            rsa_key,
-            algorithms=["RS256"],
-            audience=settings.AUTHENTIK_AUDIENCE,
-            issuer=settings.AUTHENTIK_ISSUER,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
         )
         return payload
     except JWTError as e:
@@ -86,7 +61,7 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Extract and validate the current user from the JWT token."""
-    payload = await decode_token(credentials.credentials)
+    payload = decode_token(credentials.credentials)
 
     subject_id = payload.get("sub")
     if not subject_id:
@@ -96,7 +71,7 @@ async def get_current_user(
         )
 
     result = await db.execute(
-        select(User).where(User.authentik_subject_id == subject_id, User.is_active == True)
+        select(User).where(User.id == UUID(subject_id), User.is_active == True)
     )
     user = result.scalar_one_or_none()
 

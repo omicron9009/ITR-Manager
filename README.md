@@ -28,3 +28,9 @@ docker run -d `
   -v itr-minio:/data/minio `
   itr-platform:latest
   
+
+
+
+From Docker run : 
+
+docker run -it --name itr-platform -p 8000:8000 -p 9001:9001 --env-file .env -v itr-pgdata:/var/lib/postgresql/data -v itr-minio:/data/minio omicron9009/itr-platform:api

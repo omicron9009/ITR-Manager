@@ -34,11 +34,22 @@ class UserBrief(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# ─── Authentication ─────────────────────────────────────────
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=1)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
 # ─── Client Registration ────────────────────────────────────
 class ClientRegistrationRequest(BaseModel):
     email: EmailStr
     full_name: str = Field(..., min_length=1, max_length=255)
-    authentik_subject_id: str = Field(..., min_length=1, max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
 
 
 class ClientRegistrationResponse(BaseModel):
