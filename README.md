@@ -1,36 +1,54 @@
-run this using : 
-for build 
+## Setup (requires Docker)
+
+All commands must be run from the `backend/` directory:
+
+```bash
+cd backend
+```
+
+### Build
+
+```bash
 docker build -t itr-platform:latest .
+```
 
-for tag 
+### Tag & Push
+
+```bash
 docker tag itr-platform:latest omicron9009/itr-platform:latest
-
-for push 
 docker push omicron9009/itr-platform:latest
+```
 
-for run : 
-Linux : 
+### Run (from build)
+
+Linux/Mac:
+```bash
 docker run -d \
   --name itr \
   --restart unless-stopped \
   -p 8000:8000 \
   -p 9001:9001 \
+  --env-file .env \
   -v itr-pgdata:/var/lib/postgresql/data \
   -v itr-minio:/data/minio \
   itr-platform:latest
-windows : 
+```
+
+Windows PowerShell:
+```powershell
 docker run -d `
   --name itr `
   --restart unless-stopped `
   -p 8000:8000 `
   -p 9001:9001 `
+  --env-file .env `
   -v itr-pgdata:/var/lib/postgresql/data `
   -v itr-minio:/data/minio `
   itr-platform:latest
-  
+```
 
+### Run (from Docker Hub)
 
-
-From Docker run : 
-
-docker run -it --name itr-platform -p 8000:8000 -p 9001:9001 --env-file .env -v itr-pgdata:/var/lib/postgresql/data -v itr-minio:/data/minio omicron9009/itr-platform:api
+```bash
+docker run -d --name itr-platform -p 8000:8000 -p 9001:9001 --env-file .env -v itr-pgdata:/var/lib/postgresql/data -v itr-minio:/data/minio omicron9009/itr-platform:latest
+```
