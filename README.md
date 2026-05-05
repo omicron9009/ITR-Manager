@@ -81,7 +81,6 @@ docker run -it `
 -e ADMIN_EMAIL="admin@itr-platform.com" `
 -e ADMIN_PASSWORD="admin123" `
 -e ADMIN_FULL_NAME="Platform Admin" `
--e CORS_ORIGINS='["http://localhost:3000"]' `
 -v itr-pgdata:/var/lib/postgresql/data `
 -v itr-minio:/data/minio `
 omicron9009/itr-platform:latest
@@ -116,7 +115,6 @@ docker run -it ^
 -e ADMIN_EMAIL="admin@itr-platform.com" ^
 -e ADMIN_PASSWORD="admin123" ^
 -e ADMIN_FULL_NAME="Platform Admin" ^
--e CORS_ORIGINS="[\\"http://localhost:3000\\"]" ^
 -v itr-pgdata:/var/lib/postgresql/data ^
 -v itr-minio:/data/minio ^
 omicron9009/itr-platform:latest
@@ -152,7 +150,6 @@ docker run -it \
 -e ADMIN_EMAIL="admin@itr-platform.com" \
 -e ADMIN_PASSWORD="admin123" \
 -e ADMIN_FULL_NAME="Platform Admin" \
--e CORS_ORIGINS='["http://localhost:3000"]' \
 -v itr-pgdata:/var/lib/postgresql/data \
 -v itr-minio:/data/minio \
 omicron9009/itr-platform:latest
