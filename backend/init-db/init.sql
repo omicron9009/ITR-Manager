@@ -1,0 +1,1 @@
+CREATE DATABASE authentik_db;

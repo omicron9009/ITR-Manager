@@ -3,13 +3,21 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.config import settings
+from app.core.security import get_current_user
+import sys
 
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    stream=sys.stdout, 
+    level=logging.DEBUG,
+    format='%(levelname)s: %(message)s'
+)
+logger = logging.getLogger("app")
+logger.setLevel(logging.DEBUG)
 
 
 @asynccontextmanager
@@ -34,8 +42,6 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="ITR Filing Management Platform API — manages end-to-end ITR filing lifecycle for CA practices.",
-    docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None,
     openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
     lifespan=lifespan,
 )
@@ -61,6 +67,9 @@ async def root():
         "docs": f"{settings.API_V1_PREFIX}/openapi.json",
     }
 
+@app.get("/api/v1/my-tax-filings")
+async def read_filings(current_user: str = Depends(get_current_user)):
+    return {"message": f"Hello {current_user}, here are your tax documents."}
 
 async def _ensure_database_exists():
     """Connect to the default 'postgres' DB and create the target database if it doesn't exist."""
@@ -69,25 +78,26 @@ async def _ensure_database_exists():
     try:
         # Connect to the default maintenance database
         conn = await asyncpg.connect(
-            host=settings.DATABASE_HOST,
-            port=settings.DATABASE_PORT,
-            user=settings.DATABASE_USER,
-            password=settings.DATABASE_PASSWORD,
+            host=settings.POSTGRES_HOST,
+            port=settings.POSTGRES_PORT,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
             database="postgres",
         )
+
 
         # Check if our target database exists
         exists = await conn.fetchval(
             "SELECT 1 FROM pg_database WHERE datname = $1",
-            settings.DATABASE_NAME,
+            settings.POSTGRES_DB,
         )
 
         if not exists:
             # CREATE DATABASE cannot run inside a transaction
-            await conn.execute(f'CREATE DATABASE "{settings.DATABASE_NAME}"')
-            logger.info(f"Database '{settings.DATABASE_NAME}' created successfully.")
+            await conn.execute(f'CREATE DATABASE "{settings.POSTGRES_DB}"')
+            logger.info(f"Database '{settings.POSTGRES_DB}' created successfully.")
         else:
-            logger.info(f"Database '{settings.DATABASE_NAME}' already exists.")
+            logger.info(f"Database '{settings.POSTGRES_DB}' already exists.")
 
         await conn.close()
     except Exception as e:

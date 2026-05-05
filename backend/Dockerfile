@@ -1,29 +1,19 @@
 FROM python:3.12-slim
 
-# ═══════════════════════════════════════════════════════════════
-# All-in-one: PostgreSQL 16 + MinIO + FastAPI in one container
-# Managed by supervisord
-# ═══════════════════════════════════════════════════════════════
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install PostgreSQL + supervisor + wget
+# Install only the bare essentials for Python/Postgres drivers
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev \
-    postgresql postgresql-client \
-    supervisor wget curl \
+    build-essential \
+    libpq-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install MinIO binary
-RUN wget -q https://dl.min.io/server/minio/release/linux-amd64/minio -O /usr/local/bin/minio \
-    && chmod +x /usr/local/bin/minio
-
-# Python deps
 WORKDIR /app
+
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Application code
+# Copy application code
 COPY . .
 
 # ─── PostgreSQL setup ────────────────────────────────────────
@@ -54,4 +44,4 @@ VOLUME ["/var/lib/postgresql/data", "/data/minio"]
 
 EXPOSE 8000 5432 9000 9001
 
-CMD ["/start.sh"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
