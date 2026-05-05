@@ -19,14 +19,14 @@ async def create_executive(
     db: AsyncSession,
     email: str,
     full_name: str,
-    authentik_subject_id: str,
+    password_hash: str,
     created_by: UUID,
 ) -> User:
     """Create an Executive account (Partner action)."""
     executive = User(
         email=email,
         full_name=full_name,
-        authentik_subject_id=authentik_subject_id,
+        password_hash=password_hash,
         role=UserRole.EXECUTIVE,
         account_status=AccountStatus.ACTIVE,
         is_active=True,

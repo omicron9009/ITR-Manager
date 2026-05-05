@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_partner
+from app.core.security import get_current_partner, hash_password
 from app.database import get_db
 from app.enums import FilingStatus, UserRole
 from app.models.executive_assignment import ExecutiveClientAssignment
@@ -41,7 +41,7 @@ async def create_new_executive(
         db=db,
         email=body.email,
         full_name=body.full_name,
-        authentik_subject_id=body.authentik_subject_id,
+        password_hash=hash_password(body.password),
         created_by=current_user.id,
     )
     return ExecutiveResponse(
