@@ -90,7 +90,7 @@ omicron9009/itr-platform:latest
 
 ### windows command prompt 
 ```bash
-docker run -d ^
+docker run -it ^
 --name itr-platform ^
 -p 8000:8000 ^
 -p 9001:9001 ^
@@ -126,7 +126,7 @@ omicron9009/itr-platform:latest
 ### linux command 
 
 ```bash 
-docker run -d \
+docker run -it \
 --name itr-platform \
 -p 8000:8000 \
 -p 9001:9001 \
