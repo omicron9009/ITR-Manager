@@ -135,6 +135,20 @@ async def confirm_completed_doc_upload(
 
     await enforce_client_access(db, current_user, filing.client_id)
 
+    # Validate filing state for the doc type
+    if doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT:
+        if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot upload acknowledgement in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
+            )
+    elif doc_type == CompletedDocType.INVOICE:
+        if filing.status not in (FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot upload invoice in {filing.status.value} state. Filing must be in PAYMENT or COMPLETED.",
+            )
+
     # Create stored file
     stored_file = StoredFile(
         bucket=settings.MINIO_BUCKET_NAME,
@@ -147,16 +161,30 @@ async def confirm_completed_doc_upload(
     db.add(stored_file)
     await db.flush()
 
-    # Create completed doc record
-    completed_doc = FilingCompletedDoc(
-        filing_id=filing_id,
-        doc_type=doc_type,
-        file_id=stored_file.id,
-        uploaded_by=current_user.id,
+    # Upsert: replace existing doc if one already exists for this filing + doc_type
+    existing_result = await db.execute(
+        select(FilingCompletedDoc).where(
+            FilingCompletedDoc.filing_id == filing_id,
+            FilingCompletedDoc.doc_type == doc_type,
+        )
     )
-    db.add(completed_doc)
+    existing_doc = existing_result.scalar_one_or_none()
 
-    # If ITR Acknowledgement → transition to PAYMENT
+    if existing_doc:
+        existing_doc.file_id = stored_file.id
+        existing_doc.uploaded_by = current_user.id
+        from datetime import datetime
+        existing_doc.uploaded_at = datetime.utcnow()
+    else:
+        completed_doc = FilingCompletedDoc(
+            filing_id=filing_id,
+            doc_type=doc_type,
+            file_id=stored_file.id,
+            uploaded_by=current_user.id,
+        )
+        db.add(completed_doc)
+
+    # If ITR Acknowledgement → transition to PAYMENT (only from FILING state)
     if doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT and filing.status == FilingStatus.FILING:
         await transition_filing_status(
             db=db,
@@ -203,6 +231,50 @@ async def confirm_completed_doc_upload(
     return {"message": f"{doc_type.value} uploaded successfully", "file_id": str(stored_file.id)}
 
 
+# ─── GET /storage/completed-docs/{filing_id} ─────────────────
+@router.get("/completed-docs/{filing_id}", response_model=list[dict])
+async def get_completed_docs(
+    filing_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get completed docs (acknowledgement, invoice) for a filing.
+    Clients can only see these once filing is COMPLETED.
+    """
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_client_access(db, current_user, filing.client_id)
+
+    # Clients can only view filed documents after COMPLETED state
+    if current_user.role == UserRole.CLIENT and filing.status != FilingStatus.COMPLETED:
+        return []
+
+    result = await db.execute(
+        select(FilingCompletedDoc).where(FilingCompletedDoc.filing_id == filing_id)
+    )
+    docs = result.scalars().all()
+
+    items = []
+    for doc in docs:
+        file_result = await db.execute(select(StoredFile).where(StoredFile.id == doc.file_id))
+        stored = file_result.scalar_one_or_none()
+        items.append({
+            "id": str(doc.id),
+            "doc_type": doc.doc_type.value,
+            "file_id": str(doc.file_id),
+            "filename": stored.original_filename if stored else None,
+            "content_type": stored.content_type if stored else None,
+            "file_size": stored.file_size_bytes if stored else None,
+            "uploaded_by": str(doc.uploaded_by),
+            "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+        })
+
+    return items
+
+
 # ─── GET /storage/{file_id}/download-url ─────────────────────
 @router.get("/{file_id}/download-url", response_model=dict)
 async def get_file_download_url(
@@ -210,9 +282,35 @@ async def get_file_download_url(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a pre-signed download URL for any stored file."""
+    """Get a pre-signed download URL for any stored file.
+    Accepts a StoredFile.id directly, or a FilingCompletedDoc.id / FilingComputation.id
+    and resolves to the underlying StoredFile.
+    """
+    from app.models.filing_computation import FilingComputation
+
     result = await db.execute(select(StoredFile).where(StoredFile.id == file_id))
     stored_file = result.scalar_one_or_none()
+
+    # If not found directly, try resolving through FilingCompletedDoc
+    if not stored_file:
+        doc_result = await db.execute(
+            select(FilingCompletedDoc).where(FilingCompletedDoc.id == file_id)
+        )
+        completed_doc = doc_result.scalar_one_or_none()
+        if completed_doc:
+            file_result = await db.execute(select(StoredFile).where(StoredFile.id == completed_doc.file_id))
+            stored_file = file_result.scalar_one_or_none()
+
+    # If still not found, try resolving through FilingComputation
+    if not stored_file:
+        comp_result = await db.execute(
+            select(FilingComputation).where(FilingComputation.id == file_id)
+        )
+        computation = comp_result.scalar_one_or_none()
+        if computation:
+            file_result = await db.execute(select(StoredFile).where(StoredFile.id == computation.file_id))
+            stored_file = file_result.scalar_one_or_none()
+
     if not stored_file:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 

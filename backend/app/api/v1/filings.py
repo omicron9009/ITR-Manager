@@ -289,6 +289,42 @@ async def transition_filing(
 
     await enforce_filing_access(db, current_user, filing.client_id)
 
+    # Only Partner/Executive can use the generic transition endpoint
+    if current_user.role == UserRole.CLIENT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Clients cannot use the generic transition endpoint",
+        )
+
+    # Enforce BRD: certain forward transitions must go through dedicated endpoints.
+    # This generic endpoint allows:
+    #   - any state → HALTED (halt)
+    #   - HALTED → any valid state (resume)
+    #   - FILING → PAYMENT (exec/partner marks ITR as filed)
+    #   - PAYMENT → COMPLETED (exec/partner marks payment received)
+    # Blocked (must use dedicated endpoint):
+    #   - INITIATED → ON_BOARDING (use: assign documents)
+    #   - ON_BOARDING → PROCESSING (use: submit documents)
+    #   - PROCESSING → COMPUTATION (use: approve all documents)
+    #   - COMPUTATION → FILING (use: client approves computation)
+    is_halt = body.to_status == FilingStatus.HALTED
+    is_resume = filing.status == FilingStatus.HALTED
+    allowed_forward = {
+        (FilingStatus.FILING, FilingStatus.PAYMENT),
+        (FilingStatus.PAYMENT, FilingStatus.COMPLETED),
+    }
+    is_allowed_forward = (filing.status, body.to_status) in allowed_forward
+
+    if not (is_halt or is_resume or is_allowed_forward):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This transition must use its dedicated endpoint: "
+                "assign documents (→ON_BOARDING), submit documents (→PROCESSING), "
+                "approve documents (→COMPUTATION), approve computation (→FILING)."
+            ),
+        )
+
     filing = await transition_filing_status(
         db=db,
         filing=filing,
@@ -378,19 +414,28 @@ async def submit_documents(
     if filing.client_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
 
+    # BRD: Client submits from ON_BOARDING (first time) or ON_BOARDING again (after rejection loop)
+    if filing.status not in {FilingStatus.ON_BOARDING, FilingStatus.PROCESSING}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Documents can only be submitted while the filing is in ON_BOARDING or PROCESSING, not {filing.status.value}",
+        )
+
     from datetime import datetime
     filing.documents_submitted_at = datetime.utcnow()
 
-    filing = await transition_filing_status(
-        db=db,
-        filing=filing,
-        to_status=FilingStatus.PROCESSING,
-        changed_by=current_user.id,
-        remarks="Documents submitted by client",
-        ip_address=request.client.host if request.client else None,
-    )
+    # Transition to PROCESSING if currently in ON_BOARDING
+    if filing.status == FilingStatus.ON_BOARDING:
+        filing = await transition_filing_status(
+            db=db,
+            filing=filing,
+            to_status=FilingStatus.PROCESSING,
+            changed_by=current_user.id,
+            remarks="Documents submitted by client",
+            ip_address=request.client.host if request.client else None,
+        )
 
-    # Notify partner + executive
+    # Notify partner + executive on every submission (initial or re-submission after rejection)
     partner_result = await db.execute(
         select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
     )

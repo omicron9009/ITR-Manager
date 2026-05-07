@@ -445,16 +445,15 @@ async def reject_filing_documents(
         client_id=filing.client_id,
     )
 
-    # Filing stays in PROCESSING — client must re-upload
-    # Transition back to ON_BOARDING so client can re-upload
-    if filing.status == FilingStatus.PROCESSING:
-        from app.services.filing_service import transition_filing_status
-        await transition_filing_status(
-            db=db,
-            filing=filing,
-            to_status=FilingStatus.ON_BOARDING,
-            changed_by=current_user.id,
-            remarks=f"{len(rejected)} document(s) rejected — client must re-upload",
-        )
+    # BRD: Filing stays in PROCESSING — rejected placeholders go RED,
+    # client re-uploads the rejected docs and re-submits.
+    # Notify client about the rejections.
+    await create_notification(
+        db=db,
+        user_id=filing.client_id,
+        title="Documents Require Correction",
+        message=f"{len(rejected)} document(s) need to be re-uploaded for {filing.financial_year}.",
+        related_filing_id=filing.id,
+    )
 
     return {"message": f"{len(rejected)} document(s) rejected", "count": len(rejected)}

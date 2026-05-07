@@ -94,7 +94,7 @@ class NotificationChannel(str, enum.Enum):
 VALID_FILING_TRANSITIONS: dict[FilingStatus, list[FilingStatus]] = {
     FilingStatus.INITIATED: [FilingStatus.ON_BOARDING, FilingStatus.HALTED],
     FilingStatus.ON_BOARDING: [FilingStatus.PROCESSING, FilingStatus.HALTED],
-    FilingStatus.PROCESSING: [FilingStatus.COMPUTATION, FilingStatus.HALTED],
+    FilingStatus.PROCESSING: [FilingStatus.ON_BOARDING, FilingStatus.COMPUTATION, FilingStatus.HALTED],
     FilingStatus.COMPUTATION: [FilingStatus.FILING, FilingStatus.HALTED],
     FilingStatus.FILING: [FilingStatus.PAYMENT, FilingStatus.HALTED],
     FilingStatus.PAYMENT: [FilingStatus.COMPLETED, FilingStatus.HALTED],

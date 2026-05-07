@@ -17,7 +17,7 @@ class ComputationUploadRequest(BaseModel):
 
 class ComputationUploadURLResponse(BaseModel):
     upload_url: str
-    computation_id: UUID
+    computation_id: Optional[UUID] = None
     version: int
     object_key: str
 

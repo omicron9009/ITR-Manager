@@ -75,7 +75,7 @@ async def get_computation_upload_url(
 
     return ComputationUploadURLResponse(
         upload_url=upload_url,
-        computation_id=None,  # Will be created on confirm
+        computation_id=None,  # Created after the upload is confirmed
         version=next_version,
         object_key=object_key,
     )
@@ -126,6 +126,8 @@ async def confirm_computation_upload(
     )
     db.add(computation)
 
+    await db.flush()
+
     # Update filing timestamp
     filing.computation_uploaded_at = datetime.utcnow()
     filing.updated_by = current_user.id
@@ -149,7 +151,6 @@ async def confirm_computation_upload(
         related_filing_id=filing_id,
     )
 
-    await db.flush()
     return ComputationResponse(
         id=computation.id,
         filing_id=computation.filing_id,
