@@ -137,13 +137,24 @@ async def assign_documents_to_filing(
     current_user: User = Depends(get_current_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign document placeholders to a filing (Executive/Partner)."""
+    """Assign document placeholders to a filing (Executive/Partner).
+
+    Idempotent: can be called multiple times to update the checklist.
+    Works in INITIATED or ON_BOARDING state.
+    """
     result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = result.scalar_one_or_none()
     if not filing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
 
     await enforce_filing_access(db, current_user, filing.client_id)
+
+    # Allow assigning/re-assigning documents in INITIATED or ON_BOARDING
+    if filing.status not in (FilingStatus.INITIATED, FilingStatus.ON_BOARDING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot assign documents when filing is in {filing.status.value} state",
+        )
 
     placeholders = await assign_document_placeholders(
         db=db,
@@ -292,17 +303,31 @@ async def confirm_document_upload(
     """Confirm a document upload after the client uploads to MinIO."""
     from app.config import settings
 
-    # Create stored_file record
-    stored_file = StoredFile(
-        bucket=settings.MINIO_BUCKET_NAME,
-        object_key=object_key,
-        original_filename=filename,
-        content_type=content_type,
-        file_size_bytes=file_size,
-        uploaded_by=current_user.id,
+    # Reuse existing StoredFile if same bucket/object_key (idempotent retry)
+    existing_file_result = await db.execute(
+        select(StoredFile).where(
+            StoredFile.bucket == settings.MINIO_BUCKET_NAME,
+            StoredFile.object_key == object_key,
+        )
     )
-    db.add(stored_file)
-    await db.flush()
+    stored_file = existing_file_result.scalar_one_or_none()
+
+    if stored_file:
+        stored_file.original_filename = filename
+        stored_file.content_type = content_type
+        stored_file.file_size_bytes = file_size
+        stored_file.uploaded_by = current_user.id
+    else:
+        stored_file = StoredFile(
+            bucket=settings.MINIO_BUCKET_NAME,
+            object_key=object_key,
+            original_filename=filename,
+            content_type=content_type,
+            file_size_bytes=file_size,
+            uploaded_by=current_user.id,
+        )
+        db.add(stored_file)
+        await db.flush()
 
     # Update document placeholder
     doc = await record_document_upload(db, document_id, stored_file.id, current_user.id)
@@ -409,7 +434,7 @@ async def approve_filing_documents(
                 message="All your documents have been approved. Computation will be prepared.",
                 related_filing_id=filing_id,
             )
-            result_msg += ". All documents approved — filing moved to COMPUTATION."
+            result_msg += ". All documents approved - filing moved to COMPUTATION."
 
     return {"message": result_msg, "all_approved": all_approved}
 

@@ -20,10 +20,12 @@ async def create_notification(
     related_client_id: Optional[UUID] = None,
 ) -> Notification:
     """Create an in-app notification for a user."""
+    from app.services.audit_service import _sanitize_ascii
+
     notification = Notification(
         user_id=user_id,
-        title=title,
-        message=message,
+        title=_sanitize_ascii(title),
+        message=_sanitize_ascii(message),
         channel=channel,
         related_filing_id=related_filing_id,
         related_client_id=related_client_id,

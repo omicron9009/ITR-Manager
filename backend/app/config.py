@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = ""
     MINIO_BUCKET_NAME: str = "itr-documents"
     MINIO_USE_SSL: bool = False
+    # Public endpoint for presigned URLs (used in browser). Falls back to MINIO_ENDPOINT.
+    MINIO_PUBLIC_ENDPOINT: str = ""
 
     # JWT Authentication
     JWT_SECRET_KEY: str = "CHANGE-ME-TO-A-RANDOM-SECRET"

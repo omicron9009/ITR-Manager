@@ -119,6 +119,9 @@ async def confirm_completed_doc_upload(
     db: AsyncSession = Depends(get_db),
 ):
     """Confirm upload of ITR Acknowledgement or Invoice."""
+    import logging
+    logger = logging.getLogger("app")
+
     if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
@@ -127,6 +130,7 @@ async def confirm_completed_doc_upload(
     from app.services.notification_service import create_notification
     from app.services.audit_service import record_audit_event
     from app.enums import AuditEventType
+    from datetime import datetime
 
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = filing_result.scalar_one_or_none()
@@ -136,30 +140,43 @@ async def confirm_completed_doc_upload(
     await enforce_client_access(db, current_user, filing.client_id)
 
     # Validate filing state for the doc type
-    if doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT:
-        if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot upload acknowledgement in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
-            )
-    elif doc_type == CompletedDocType.INVOICE:
+    # ITR Acknowledgement can be uploaded at any time (flexibility per business requirement)
+    # Invoice can only be uploaded in PAYMENT or COMPLETED state
+    if doc_type == CompletedDocType.INVOICE:
         if filing.status not in (FilingStatus.PAYMENT, FilingStatus.COMPLETED):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Cannot upload invoice in {filing.status.value} state. Filing must be in PAYMENT or COMPLETED.",
             )
 
-    # Create stored file
-    stored_file = StoredFile(
-        bucket=settings.MINIO_BUCKET_NAME,
-        object_key=object_key,
-        original_filename=filename,
-        content_type=content_type,
-        file_size_bytes=file_size,
-        uploaded_by=current_user.id,
+    # Reuse existing StoredFile if same bucket/object_key (idempotent retry)
+    existing_file_result = await db.execute(
+        select(StoredFile).where(
+            StoredFile.bucket == settings.MINIO_BUCKET_NAME,
+            StoredFile.object_key == object_key,
+        )
     )
-    db.add(stored_file)
-    await db.flush()
+    stored_file = existing_file_result.scalar_one_or_none()
+
+    if stored_file:
+        # Update metadata in case it changed
+        stored_file.original_filename = filename
+        stored_file.content_type = content_type
+        stored_file.file_size_bytes = file_size
+        stored_file.uploaded_by = current_user.id
+        stored_file.uploaded_at = datetime.utcnow()
+        logger.info(f"Reusing existing StoredFile {stored_file.id} for object_key={object_key}")
+    else:
+        stored_file = StoredFile(
+            bucket=settings.MINIO_BUCKET_NAME,
+            object_key=object_key,
+            original_filename=filename,
+            content_type=content_type,
+            file_size_bytes=file_size,
+            uploaded_by=current_user.id,
+        )
+        db.add(stored_file)
+        await db.flush()
 
     # Upsert: replace existing doc if one already exists for this filing + doc_type
     existing_result = await db.execute(
@@ -173,7 +190,6 @@ async def confirm_completed_doc_upload(
     if existing_doc:
         existing_doc.file_id = stored_file.id
         existing_doc.uploaded_by = current_user.id
-        from datetime import datetime
         existing_doc.uploaded_at = datetime.utcnow()
     else:
         completed_doc = FilingCompletedDoc(
@@ -184,6 +200,8 @@ async def confirm_completed_doc_upload(
         )
         db.add(completed_doc)
 
+    await db.flush()
+
     # If ITR Acknowledgement → transition to PAYMENT (only from FILING state)
     if doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT and filing.status == FilingStatus.FILING:
         await transition_filing_status(
@@ -191,7 +209,7 @@ async def confirm_completed_doc_upload(
             filing=filing,
             to_status=FilingStatus.PAYMENT,
             changed_by=current_user.id,
-            remarks="ITR filed — acknowledgement uploaded",
+            remarks="ITR filed - acknowledgement uploaded",
         )
 
         await record_audit_event(
@@ -208,6 +226,17 @@ async def confirm_completed_doc_upload(
             title="ITR Filed Successfully",
             message=f"Your ITR for {filing.financial_year} has been filed. Please complete payment.",
             related_filing_id=filing_id,
+        )
+
+    elif doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT:
+        # Acknowledgement uploaded outside FILING state — just record audit event
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.ITR_FILED,
+            actor_id=current_user.id,
+            client_id=filing.client_id,
+            filing_id=filing_id,
+            details={"note": f"Acknowledgement uploaded in {filing.status.value} state"},
         )
 
     elif doc_type == CompletedDocType.INVOICE:

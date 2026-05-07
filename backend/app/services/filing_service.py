@@ -15,7 +15,7 @@ from app.core.exceptions import (
 from app.enums import AuditEventType, FilingStatus, VALID_FILING_TRANSITIONS
 from app.models.filing import ITRFiling
 from app.models.filing_state_history import FilingStateHistory
-from app.services.audit_service import record_audit_event
+from app.services.audit_service import _sanitize_ascii, record_audit_event
 
 
 def calculate_progress_percentage(status: FilingStatus) -> int:
@@ -98,7 +98,7 @@ async def transition_filing_status(
         from_status=from_status,
         to_status=to_status,
         changed_by=changed_by,
-        remarks=remarks,
+        remarks=_sanitize_ascii(remarks) if remarks else remarks,
     )
     db.add(history)
 

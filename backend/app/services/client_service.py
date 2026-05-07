@@ -53,7 +53,7 @@ async def register_client(
             db=db,
             user_id=partner.id,
             title="New Client Registration",
-            message=f"New client registration pending verification — {full_name}",
+            message=f"New client registration pending verification - {full_name}",
             related_client_id=user.id,
         )
 

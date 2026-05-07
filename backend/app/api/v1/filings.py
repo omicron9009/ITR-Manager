@@ -93,7 +93,7 @@ async def initiate_filing(
             db=db,
             user_id=partner.id,
             title="New ITR Filing Initiated",
-            message=f"New ITR Filing Initiated — {current_user.full_name}, {body.financial_year}",
+            message=f"New ITR Filing Initiated - {current_user.full_name}, {body.financial_year}",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
         )
@@ -113,7 +113,7 @@ async def initiate_filing(
             db=db,
             user_id=exec_assignment.executive_id,
             title="New ITR Filing Initiated",
-            message=f"New ITR Filing Initiated — {current_user.full_name}, {body.financial_year}",
+            message=f"New ITR Filing Initiated - {current_user.full_name}, {body.financial_year}",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
         )
@@ -300,20 +300,48 @@ async def transition_filing(
     # This generic endpoint allows:
     #   - any state → HALTED (halt)
     #   - HALTED → any valid state (resume)
+    #   - INITIATED → ON_BOARDING (assign documents handles this, but allow here for idempotency)
     #   - FILING → PAYMENT (exec/partner marks ITR as filed)
     #   - PAYMENT → COMPLETED (exec/partner marks payment received)
     # Blocked (must use dedicated endpoint):
-    #   - INITIATED → ON_BOARDING (use: assign documents)
     #   - ON_BOARDING → PROCESSING (use: submit documents)
     #   - PROCESSING → COMPUTATION (use: approve all documents)
     #   - COMPUTATION → FILING (use: client approves computation)
     is_halt = body.to_status == FilingStatus.HALTED
     is_resume = filing.status == FilingStatus.HALTED
+    is_already_in_target = filing.status == body.to_status
     allowed_forward = {
+        (FilingStatus.INITIATED, FilingStatus.ON_BOARDING),
         (FilingStatus.FILING, FilingStatus.PAYMENT),
         (FilingStatus.PAYMENT, FilingStatus.COMPLETED),
     }
     is_allowed_forward = (filing.status, body.to_status) in allowed_forward
+
+    # If already in target state, return current filing (idempotent)
+    if is_already_in_target:
+        client_result = await db.execute(select(User).where(User.id == filing.client_id))
+        client = client_result.scalar_one_or_none()
+        return FilingResponse(
+            id=filing.id,
+            client_id=filing.client_id,
+            client_name=client.full_name if client else None,
+            financial_year=filing.financial_year,
+            status=filing.status,
+            assigned_executive_id=filing.assigned_executive_id,
+            initiated_at=filing.initiated_at,
+            onboarding_completed_at=filing.onboarding_completed_at,
+            documents_submitted_at=filing.documents_submitted_at,
+            documents_approved_at=filing.documents_approved_at,
+            computation_uploaded_at=filing.computation_uploaded_at,
+            computation_approved_at=filing.computation_approved_at,
+            filed_at=filing.filed_at,
+            payment_received_at=filing.payment_received_at,
+            completed_at=filing.completed_at,
+            halted_at=filing.halted_at,
+            halt_reason=filing.halt_reason,
+            created_at=filing.created_at,
+            updated_at=filing.updated_at,
+        )
 
     if not (is_halt or is_resume or is_allowed_forward):
         raise HTTPException(

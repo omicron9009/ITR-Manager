@@ -47,6 +47,18 @@ def generate_pan_object_key(client_id: str, filename: str) -> str:
     return f"clients/{client_id}/pan/{unique_prefix}_{filename}"
 
 
+def _rewrite_url_to_public(url: str) -> str:
+    """Replace the internal MinIO endpoint with the public one in presigned URLs."""
+    public = settings.MINIO_PUBLIC_ENDPOINT
+    if not public:
+        return url
+    # Replace the internal endpoint host:port with the public one
+    internal = settings.MINIO_ENDPOINT
+    scheme = "https" if settings.MINIO_USE_SSL else "http"
+    url = url.replace(f"{scheme}://{internal}", f"{scheme}://{public}")
+    return url
+
+
 def get_presigned_upload_url(
     object_key: str,
     content_type: str,
@@ -58,7 +70,7 @@ def get_presigned_upload_url(
         object_name=object_key,
         expires=expires,
     )
-    return url
+    return _rewrite_url_to_public(url)
 
 
 def get_presigned_download_url(
@@ -79,4 +91,4 @@ def get_presigned_download_url(
         object_name=object_key,
         expires=expires,
     )
-    return url
+    return _rewrite_url_to_public(url)
