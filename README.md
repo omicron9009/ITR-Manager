@@ -59,18 +59,22 @@ docker run -it `
   --name itr-test `
   -p 8000:8000 `
   -p 9001:9001 `
+  -p 5432:5432 `
+  -p 9000:9000 `
+  -v "C:\itr-platform\postgres-data:/var/lib/postgresql/data" `
+  -v "C:\itr-platform\minio-data:/data/minio" `
   -e APP_NAME="ITR Filing Platform" `
   -e APP_VERSION="1.0.0" `
   -e DEBUG="true" `
   -e API_V1_PREFIX="/api/v1" `
-  -e POSTGRES_HOST="host.docker.internal" `
+  -e POSTGRES_HOST="localhost" `
   -e POSTGRES_PORT=5432 `
   -e POSTGRES_DB="itr_platform" `
   -e POSTGRES_USER="postgres" `
   -e POSTGRES_PASSWORD="postgres" `
   -e POSTGRES_POOL_SIZE=20 `
   -e POSTGRES_MAX_OVERFLOW=10 `
-  -e MINIO_ENDPOINT="host.docker.internal:9000" `
+  -e MINIO_ENDPOINT="localhost:9000" `
   -e MINIO_ACCESS_KEY="minioadmin" `
   -e MINIO_SECRET_KEY="minioadmin" `
   -e MINIO_BUCKET_NAME="itr-documents" `
