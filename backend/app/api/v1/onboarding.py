@@ -66,6 +66,38 @@ async def create_form_field(
             detail="Dropdown fields must have options",
         )
 
+    # Check if a field with the same key already exists (active or inactive)
+    existing_result = await db.execute(
+        select(OnboardingFormField).where(OnboardingFormField.field_key == body.field_key)
+    )
+    existing = existing_result.scalar_one_or_none()
+    if existing:
+        if existing.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"A form field with key '{body.field_key}' already exists",
+            )
+        else:
+            # Reactivate and update the existing inactive field
+            existing.field_label = body.field_label
+            existing.field_key = body.field_key
+            existing.field_type = body.field_type
+            existing.field_options = body.field_options
+            existing.is_required = body.is_required
+            existing.display_order = body.display_order
+            existing.is_active = True
+            existing.updated_by = current_user.id
+
+            await record_audit_event(
+                db=db,
+                event_type=AuditEventType.FORM_FIELD_ADDED,
+                actor_id=current_user.id,
+                details={"field_key": body.field_key, "field_label": body.field_label, "reactivated": True},
+            )
+
+            await db.flush()
+            return FormFieldResponse.model_validate(existing)
+
     field = OnboardingFormField(
         field_label=body.field_label,
         field_key=body.field_key,
@@ -123,24 +155,44 @@ async def deactivate_form_field(
     current_user: User = Depends(get_current_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft-delete (deactivate) a form field (Partner only)."""
+    """Delete a form field (Partner only). Hard-deletes if unused, soft-deletes if referenced."""
+    import uuid as uuid_mod
+    from sqlalchemy import func as sa_func
+
     result = await db.execute(select(OnboardingFormField).where(OnboardingFormField.id == field_id))
     field = result.scalar_one_or_none()
     if not field:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form field not found")
 
-    field.is_active = False
-    field.updated_by = current_user.id
+    field_key = field.field_key
+    field_label = field.field_label
+
+    # Check if any client profile references this field_key in form_data (JSONB has_key)
+    ref_result = await db.execute(
+        select(sa_func.count()).select_from(ClientProfile).where(
+            ClientProfile.form_data.has_key(field_key)
+        )
+    )
+    ref_count = ref_result.scalar() or 0
+
+    if ref_count == 0:
+        # No references — hard delete to free up field_key for re-creation
+        await db.delete(field)
+    else:
+        # Soft delete: mark inactive + rename field_key to avoid unique constraint collision
+        field.is_active = False
+        field.field_key = f"{field_key}__deleted_{str(uuid_mod.uuid4())[:8]}"
+        field.updated_by = current_user.id
 
     await record_audit_event(
         db=db,
         event_type=AuditEventType.FORM_FIELD_REMOVED,
         actor_id=current_user.id,
-        details={"field_id": str(field_id), "field_key": field.field_key},
+        details={"field_id": str(field_id), "field_key": field_key},
     )
 
     await db.flush()
-    return {"message": f"Form field '{field.field_label}' deactivated"}
+    return {"message": f"Form field '{field_label}' deleted"}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -198,6 +250,44 @@ async def submit_onboarding_form(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client profile not found")
+
+    # ── Validate required fields ──
+    required_fields_result = await db.execute(
+        select(OnboardingFormField).where(
+            OnboardingFormField.is_active == True,
+            OnboardingFormField.is_required == True,
+        )
+    )
+    required_fields = required_fields_result.scalars().all()
+
+    missing_fields = []
+    for field in required_fields:
+        value = body.form_data.get(field.field_key)
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            missing_fields.append(field.field_label)
+
+    if missing_fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"The following required fields are missing or empty: {', '.join(missing_fields)}",
+        )
+
+    # ── Validate dropdown values are in allowed options ──
+    dropdown_fields_result = await db.execute(
+        select(OnboardingFormField).where(
+            OnboardingFormField.is_active == True,
+            OnboardingFormField.field_type == FormFieldType.DROPDOWN,
+        )
+    )
+    dropdown_fields = dropdown_fields_result.scalars().all()
+
+    for field in dropdown_fields:
+        value = body.form_data.get(field.field_key)
+        if value is not None and field.field_options and value not in field.field_options:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid value '{value}' for field '{field.field_label}'. Allowed: {', '.join(field.field_options)}",
+            )
 
     # Update profile with form data
     profile.form_data = body.form_data

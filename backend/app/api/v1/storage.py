@@ -28,7 +28,7 @@ async def get_pan_upload_url(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a pre-signed URL for PAN document upload during registration."""
-    object_key = generate_pan_object_key(str(current_user.id), filename)
+    object_key = generate_pan_object_key(str(current_user.id), filename, client_name=current_user.full_name)
     upload_url = get_presigned_upload_url(object_key, content_type)
 
     return {
@@ -89,12 +89,17 @@ async def get_completed_doc_upload_url(
 
     await enforce_client_access(db, current_user, filing.client_id)
 
+    # Fetch client name for readable MinIO path
+    client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_user_result.scalar_one_or_none()
+
     from app.services.storage_service import generate_object_key
     object_key = generate_object_key(
         client_id=str(filing.client_id),
         financial_year=filing.financial_year,
         folder="filed_documents",
         filename=filename,
+        client_name=client_user.full_name if client_user else "",
     )
 
     upload_url = get_presigned_upload_url(object_key, content_type)
@@ -140,13 +145,36 @@ async def confirm_completed_doc_upload(
     await enforce_client_access(db, current_user, filing.client_id)
 
     # Validate filing state for the doc type
-    # ITR Acknowledgement can be uploaded at any time (flexibility per business requirement)
-    # Invoice can only be uploaded in PAYMENT or COMPLETED state
-    if doc_type == CompletedDocType.INVOICE:
-        if filing.status not in (FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+    if doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT:
+        if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot upload invoice in {filing.status.value} state. Filing must be in PAYMENT or COMPLETED.",
+                detail=f"Cannot upload ITR Acknowledgement in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
+            )
+
+    if doc_type == CompletedDocType.INVOICE:
+        if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot upload invoice in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
+            )
+
+    # Validate ITR_JSON file type
+    if doc_type == CompletedDocType.ITR_JSON:
+        if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot upload ITR JSON in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
+            )
+        if not filename.lower().endswith('.json'):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="ITR JSON file must have a .json extension.",
+            )
+        if content_type not in ('application/json', 'text/json'):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="ITR JSON file must have content type 'application/json'.",
             )
 
     # Reuse existing StoredFile if same bucket/object_key (idempotent retry)
@@ -202,34 +230,8 @@ async def confirm_completed_doc_upload(
 
     await db.flush()
 
-    # If ITR Acknowledgement → transition to PAYMENT (only from FILING state)
-    if doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT and filing.status == FilingStatus.FILING:
-        await transition_filing_status(
-            db=db,
-            filing=filing,
-            to_status=FilingStatus.PAYMENT,
-            changed_by=current_user.id,
-            remarks="ITR filed - acknowledgement uploaded",
-        )
-
-        await record_audit_event(
-            db=db,
-            event_type=AuditEventType.ITR_FILED,
-            actor_id=current_user.id,
-            client_id=filing.client_id,
-            filing_id=filing_id,
-        )
-
-        await create_notification(
-            db=db,
-            user_id=filing.client_id,
-            title="ITR Filed Successfully",
-            message=f"Your ITR for {filing.financial_year} has been filed. Please complete payment.",
-            related_filing_id=filing_id,
-        )
-
-    elif doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT:
-        # Acknowledgement uploaded outside FILING state — just record audit event
+    # Record audit event per doc type
+    if doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT:
         await record_audit_event(
             db=db,
             event_type=AuditEventType.ITR_FILED,
@@ -238,7 +240,6 @@ async def confirm_completed_doc_upload(
             filing_id=filing_id,
             details={"note": f"Acknowledgement uploaded in {filing.status.value} state"},
         )
-
     elif doc_type == CompletedDocType.INVOICE:
         await record_audit_event(
             db=db,
@@ -247,14 +248,51 @@ async def confirm_completed_doc_upload(
             client_id=filing.client_id,
             filing_id=filing_id,
         )
-
-        await create_notification(
+    elif doc_type == CompletedDocType.ITR_JSON:
+        await record_audit_event(
             db=db,
-            user_id=filing.client_id,
-            title="Invoice Available",
-            message=f"Your invoice for {filing.financial_year} filing is now available.",
-            related_filing_id=filing_id,
+            event_type=AuditEventType.DOCUMENT_UPLOADED,
+            actor_id=current_user.id,
+            client_id=filing.client_id,
+            filing_id=filing_id,
+            details={"doc_type": "ITR_JSON", "filename": filename},
         )
+
+    # Check if all 3 required completed docs are uploaded — only then transition to PAYMENT
+    if filing.status == FilingStatus.FILING:
+        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON}
+        existing_docs_result = await db.execute(
+            select(FilingCompletedDoc.doc_type).where(FilingCompletedDoc.filing_id == filing_id)
+        )
+        existing_types = {row[0] for row in existing_docs_result.all()}
+        missing_types = required_doc_types - existing_types
+
+        if not missing_types:
+            # All 3 docs uploaded → transition to PAYMENT
+            await transition_filing_status(
+                db=db,
+                filing=filing,
+                to_status=FilingStatus.PAYMENT,
+                changed_by=current_user.id,
+                remarks="ITR filed - all required documents uploaded (Acknowledgement, Invoice, ITR JSON)",
+            )
+
+            await create_notification(
+                db=db,
+                user_id=filing.client_id,
+                title="ITR Filed Successfully",
+                message=f"Your ITR for {filing.financial_year} has been filed. Please complete payment.",
+                related_filing_id=filing_id,
+            )
+
+        await db.flush()
+        remaining = [t.value for t in (required_doc_types - existing_types)]
+        return {
+            "message": f"{doc_type.value} uploaded successfully",
+            "file_id": str(stored_file.id),
+            "remaining_docs": remaining,
+            "all_docs_uploaded": len(remaining) == 0,
+        }
 
     await db.flush()
     return {"message": f"{doc_type.value} uploaded successfully", "file_id": str(stored_file.id)}
@@ -278,12 +316,20 @@ async def get_completed_docs(
     await enforce_client_access(db, current_user, filing.client_id)
 
     # Clients can only view filed documents after COMPLETED state
-    if current_user.role == UserRole.CLIENT and filing.status != FilingStatus.COMPLETED:
-        return []
-
-    result = await db.execute(
-        select(FilingCompletedDoc).where(FilingCompletedDoc.filing_id == filing_id)
-    )
+    if current_user.role == UserRole.CLIENT:
+        if filing.status != FilingStatus.COMPLETED:
+            return []
+        # Only show Acknowledgement and Invoice to client, not ITR JSON (internal)
+        result = await db.execute(
+            select(FilingCompletedDoc).where(
+                FilingCompletedDoc.filing_id == filing_id,
+                FilingCompletedDoc.doc_type.in_([CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE]),
+            )
+        )
+    else:
+        result = await db.execute(
+            select(FilingCompletedDoc).where(FilingCompletedDoc.filing_id == filing_id)
+        )
     docs = result.scalars().all()
 
     items = []

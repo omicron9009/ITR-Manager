@@ -94,6 +94,7 @@ docker run -it ^
 --name itr-platform ^
 -p 8000:8000 ^
 -p 9001:9001 ^
+-p 9000:9000 ^
 -e APP_NAME="ITR Filing Platform" ^
 -e APP_VERSION="1.0.0" ^
 -e DEBUG=true ^

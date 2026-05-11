@@ -43,6 +43,7 @@ class ComputationStatus(str, enum.Enum):
 class CompletedDocType(str, enum.Enum):
     ITR_ACKNOWLEDGEMENT = "ITR_ACKNOWLEDGEMENT"
     INVOICE = "INVOICE"
+    ITR_JSON = "ITR_JSON"
 
 
 class FormFieldType(str, enum.Enum):
@@ -95,7 +96,7 @@ VALID_FILING_TRANSITIONS: dict[FilingStatus, list[FilingStatus]] = {
     FilingStatus.INITIATED: [FilingStatus.ON_BOARDING, FilingStatus.HALTED],
     FilingStatus.ON_BOARDING: [FilingStatus.PROCESSING, FilingStatus.HALTED],
     FilingStatus.PROCESSING: [FilingStatus.ON_BOARDING, FilingStatus.COMPUTATION, FilingStatus.HALTED],
-    FilingStatus.COMPUTATION: [FilingStatus.FILING, FilingStatus.HALTED],
+    FilingStatus.COMPUTATION: [FilingStatus.PROCESSING, FilingStatus.FILING, FilingStatus.HALTED],
     FilingStatus.FILING: [FilingStatus.PAYMENT, FilingStatus.HALTED],
     FilingStatus.PAYMENT: [FilingStatus.COMPLETED, FilingStatus.HALTED],
     FilingStatus.HALTED: [

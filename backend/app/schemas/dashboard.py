@@ -132,3 +132,175 @@ class ExecutiveWorkloadItem(BaseModel):
 
 class ExecutiveWorkloadResponse(BaseModel):
     items: list[ExecutiveWorkloadItem]
+
+
+# ═══════════════════════════════════════════════════════════════
+# ANALYTICS — Partner / Executive / Client
+# ═══════════════════════════════════════════════════════════════
+
+
+# ─── Shared sub-models ──────────────────────────────────────
+
+class ExecutiveClientInfo(BaseModel):
+    client_id: UUID
+    client_name: str
+    client_email: str
+    filing_status: Optional[str] = None
+    financial_year: Optional[str] = None
+
+
+class FilingStatusClientInfo(BaseModel):
+    client_id: UUID
+    client_name: str
+    financial_year: str
+    assigned_executive: Optional[str] = None
+    last_updated: Optional[datetime] = None
+
+
+class ClientStatusBreakdown(BaseModel):
+    status: str
+    count: int
+
+
+class FilingStatusBreakdown(BaseModel):
+    status: str
+    count: int
+    clients: list[FilingStatusClientInfo]
+
+
+class FYDistribution(BaseModel):
+    financial_year: str
+    total_filings: int
+    completed: int
+    active: int
+
+
+class ExecutiveClientDetail(BaseModel):
+    executive_id: UUID
+    executive_name: str
+    executive_email: str
+    is_active: bool
+    clients: list[ExecutiveClientInfo]
+    total_clients: int
+    active_filings: int
+    completed_filings: int
+
+
+# ─── Partner Analytics ──────────────────────────────────────
+
+class PartnerAnalyticsResponse(BaseModel):
+    # Overview
+    total_clients: int
+    active_clients: int
+    pending_verification_clients: int
+    rejected_clients: int
+    total_executives: int
+    active_executives: int
+
+    # Filing overview
+    total_filings: int
+    active_filings: int
+    completed_filings: int
+    halted_filings: int
+
+    # Executive → Client mapping
+    executive_client_mapping: list[ExecutiveClientDetail]
+    unassigned_clients: list[ExecutiveClientInfo]
+
+    # State-wise breakdown with client details
+    filing_status_breakdown: list[FilingStatusBreakdown]
+
+    # Client account status breakdown
+    client_status_breakdown: list[ClientStatusBreakdown]
+
+    # Financial year distribution
+    fy_distribution: list[FYDistribution]
+
+    # Average processing times (in days)
+    avg_days_initiated_to_completed: Optional[float] = None
+    avg_days_in_processing: Optional[float] = None
+    avg_days_in_computation: Optional[float] = None
+
+    # Recent activity
+    recent_filings: list[FilingStatusClientInfo]
+
+
+# ─── Executive Analytics ────────────────────────────────────
+
+class ExecutiveAnalyticsResponse(BaseModel):
+    executive_name: str
+    executive_email: str
+
+    # Client overview
+    total_assigned_clients: int
+    clients: list[ExecutiveClientInfo]
+
+    # Filing overview
+    total_filings: int
+    active_filings: int
+    completed_filings: int
+    halted_filings: int
+
+    # State-wise breakdown (assigned clients only)
+    filing_status_breakdown: list[FilingStatusBreakdown]
+
+    # FY distribution
+    fy_distribution: list[FYDistribution]
+
+    # Processing metrics
+    avg_days_initiated_to_completed: Optional[float] = None
+    avg_days_in_processing: Optional[float] = None
+
+    # Document stats
+    total_documents_pending: int = 0
+    total_documents_rejected: int = 0
+    total_documents_approved: int = 0
+
+    # Recent activity
+    recent_filings: list[FilingStatusClientInfo]
+
+
+# ─── Client Analytics ───────────────────────────────────────
+
+class ClientFilingDetail(BaseModel):
+    filing_id: UUID
+    financial_year: str
+    status: str
+    progress_percentage: int
+    initiated_at: datetime
+    completed_at: Optional[datetime] = None
+    last_updated: datetime
+    assigned_executive_name: Optional[str] = None
+    documents_total: int = 0
+    documents_approved: int = 0
+    documents_pending: int = 0
+    documents_rejected: int = 0
+    computation_status: Optional[str] = None
+    days_since_initiated: int = 0
+
+
+class ClientAnalyticsResponse(BaseModel):
+    # Profile
+    client_name: str
+    client_email: str
+    account_status: str
+    registered_at: datetime
+    pan_number: Optional[str] = None
+
+    # Filing overview
+    total_filings: int
+    active_filings: int
+    completed_filings: int
+
+    # Detailed filing list
+    filings: list[ClientFilingDetail]
+
+    # Notifications
+    total_notifications: int
+    unread_notifications: int
+
+    # Document overview across all filings
+    total_documents: int
+    total_approved: int
+    total_pending: int
+    total_rejected: int

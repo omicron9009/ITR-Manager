@@ -1,5 +1,6 @@
 """Service — MinIO storage operations (pre-signed URLs, file metadata)."""
 
+import re
 import uuid
 from datetime import timedelta
 from typing import Optional
@@ -32,19 +33,35 @@ def ensure_bucket_exists():
         client.make_bucket(settings.MINIO_BUCKET_NAME)
 
 
-def generate_object_key(client_id: str, financial_year: str, folder: str, filename: str) -> str:
+def _sanitize_name_for_path(name: str) -> str:
+    """Sanitize a client name for use in file paths."""
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '', name.replace(' ', '_'))
+    return sanitized or "client"
+
+
+def generate_object_key(client_id: str, financial_year: str, folder: str, filename: str, client_name: str = "") -> str:
     """
     Generate a structured object key for MinIO.
-    Pattern: clients/{client_id}/ITR-{FY}/{folder}/{uuid}_{filename}
+    Pattern: clients/{Name}_{client_id}/ITR-{FY}/{folder}/{uuid}_{filename}
     """
     unique_prefix = str(uuid.uuid4())[:8]
-    return f"clients/{client_id}/ITR-{financial_year}/{folder}/{unique_prefix}_{filename}"
+    if client_name:
+        sanitized = _sanitize_name_for_path(client_name)
+        client_dir = f"{sanitized}_{client_id}"
+    else:
+        client_dir = client_id
+    return f"clients/{client_dir}/ITR-{financial_year}/{folder}/{unique_prefix}_{filename}"
 
 
-def generate_pan_object_key(client_id: str, filename: str) -> str:
+def generate_pan_object_key(client_id: str, filename: str, client_name: str = "") -> str:
     """Generate object key for PAN document uploads."""
     unique_prefix = str(uuid.uuid4())[:8]
-    return f"clients/{client_id}/pan/{unique_prefix}_{filename}"
+    if client_name:
+        sanitized = _sanitize_name_for_path(client_name)
+        client_dir = f"{sanitized}_{client_id}"
+    else:
+        client_dir = client_id
+    return f"clients/{client_dir}/pan/{unique_prefix}_{filename}"
 
 
 def _rewrite_url_to_public(url: str) -> str:

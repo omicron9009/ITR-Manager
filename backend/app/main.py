@@ -120,8 +120,79 @@ async def _create_tables():
             await conn.execute(text("SELECT pg_advisory_xact_lock(1)"))
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database tables ensured.")
+
+        # Ensure PostgreSQL enums have all values defined in Python enums
+        await _sync_pg_enums()
     except Exception as e:
         logger.warning(f"Table creation skipped: {e}")
+
+
+async def _sync_pg_enums():
+    """Ensure PostgreSQL enum types have all values defined in Python enums.
+
+    On old volumes, newly added Python enum values (e.g. ITR_JSON) may not
+    exist in the PostgreSQL enum type yet. This adds any missing values
+    automatically on startup so no manual migration is needed.
+
+    Uses raw asyncpg (not SQLAlchemy) because ALTER TYPE ... ADD VALUE
+    cannot run inside a transaction block, and SQLAlchemy's async engine
+    auto-begins transactions that cannot be fully escaped.
+    """
+    import asyncpg
+
+    from app.enums import (
+        AccountStatus, FilingStatus, DocumentStatus, ComputationStatus,
+        CompletedDocType, FormFieldType, AuditEventType, NotificationChannel, UserRole,
+    )
+    enum_map = {
+        "user_role": UserRole,
+        "account_status": AccountStatus,
+        "filing_status": FilingStatus,
+        "document_status": DocumentStatus,
+        "computation_status": ComputationStatus,
+        "completed_doc_type": CompletedDocType,
+        "form_field_type": FormFieldType,
+        "audit_event_type": AuditEventType,
+        "notification_channel": NotificationChannel,
+    }
+
+    try:
+        conn = await asyncpg.connect(
+            host=settings.POSTGRES_HOST,
+            port=settings.POSTGRES_PORT,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            database=settings.POSTGRES_DB,
+        )
+
+        try:
+            for pg_type_name, py_enum in enum_map.items():
+                # Get existing values from PostgreSQL
+                rows = await conn.fetch(
+                    "SELECT enumlabel FROM pg_enum WHERE enumtypid = "
+                    "(SELECT oid FROM pg_type WHERE typname = $1)",
+                    pg_type_name,
+                )
+                existing_values = {row["enumlabel"] for row in rows}
+
+                if not existing_values:
+                    # Type doesn't exist yet (fresh DB) — create_all handles it
+                    continue
+
+                # Add any missing values (runs outside a transaction by default)
+                for member in py_enum:
+                    if member.value not in existing_values:
+                        # DDL cannot use $1 params; value is from our own enum (safe)
+                        await conn.execute(
+                            f"ALTER TYPE {pg_type_name} ADD VALUE IF NOT EXISTS '{member.value}'"
+                        )
+                        logger.info(f"Added '{member.value}' to PostgreSQL enum '{pg_type_name}'")
+        finally:
+            await conn.close()
+
+        logger.info("PostgreSQL enum sync complete.")
+    except Exception as e:
+        logger.warning(f"Enum sync failed: {e}")
 
 
 async def _seed_admin_user():

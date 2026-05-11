@@ -7,11 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import AccountNotActiveError, DuplicateFilingError
+from app.core.exceptions import AccountNotActiveError, DuplicateFilingError, OnboardingFormNotSubmittedError
 from app.core.permissions import enforce_client_access, enforce_filing_access
 from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_user
 from app.database import get_db
 from app.enums import AccountStatus, AuditEventType, FilingStatus, UserRole
+from app.models.client_profile import ClientProfile
 from app.models.filing import ITRFiling
 from app.models.filing_state_history import FilingStateHistory
 from app.models.user import User
@@ -50,6 +51,15 @@ async def initiate_filing(
     """
     # Check for duplicate
     await check_duplicate_filing(db, current_user.id, body.financial_year)
+
+    # Check onboarding form submission — BRD §7 STATE 1 requires form before filing
+    profile_result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == current_user.id)
+    )
+    profile = profile_result.scalar_one_or_none()
+
+    if not profile or not profile.form_submitted_at:
+        raise OnboardingFormNotSubmittedError()
 
     # Create filing
     filing = ITRFiling(
@@ -310,10 +320,12 @@ async def transition_filing(
     is_halt = body.to_status == FilingStatus.HALTED
     is_resume = filing.status == FilingStatus.HALTED
     is_already_in_target = filing.status == body.to_status
+    # Generic transition only allows transitions that DON'T have dedicated endpoints.
+    # FILING→PAYMENT uses confirm_completed_doc_upload (3-doc gate).
+    # PAYMENT→COMPLETED uses mark_payment_received (3-doc + payment check).
     allowed_forward = {
         (FilingStatus.INITIATED, FilingStatus.ON_BOARDING),
-        (FilingStatus.FILING, FilingStatus.PAYMENT),
-        (FilingStatus.PAYMENT, FilingStatus.COMPLETED),
+        (FilingStatus.COMPUTATION, FilingStatus.PROCESSING),  # Allow requesting more docs
     }
     is_allowed_forward = (filing.status, body.to_status) in allowed_forward
 
@@ -344,13 +356,23 @@ async def transition_filing(
         )
 
     if not (is_halt or is_resume or is_allowed_forward):
+        # Build a helpful message based on what the user tried to do
+        transition_hints = {
+            (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING): "Use 'Submit Documents' — the client must upload and submit documents.",
+            (FilingStatus.PROCESSING, FilingStatus.COMPUTATION): "Use 'Approve Documents' — all documents must be approved by Executive/Partner.",
+            (FilingStatus.COMPUTATION, FilingStatus.FILING): "Use 'Approve Computation' — the client must approve the computation.",
+            (FilingStatus.FILING, FilingStatus.PAYMENT): "Upload all 3 required documents (Acknowledgement, Invoice, ITR JSON) via the completed docs upload.",
+            (FilingStatus.PAYMENT, FilingStatus.COMPLETED): "Use 'Mark Payment Received' to complete the filing.",
+        }
+        hint = transition_hints.get((filing.status, body.to_status), "")
+        detail = f"Cannot transition from {filing.status.value} to {body.to_status.value} via the generic endpoint."
+        if hint:
+            detail += f" {hint}"
+        else:
+            detail += " This transition must use its dedicated endpoint."
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "This transition must use its dedicated endpoint: "
-                "assign documents (→ON_BOARDING), submit documents (→PROCESSING), "
-                "approve documents (→COMPUTATION), approve computation (→FILING)."
-            ),
+            detail=detail,
         )
 
     filing = await transition_filing_status(
@@ -446,7 +468,44 @@ async def submit_documents(
     if filing.status not in {FilingStatus.ON_BOARDING, FilingStatus.PROCESSING}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Documents can only be submitted while the filing is in ON_BOARDING or PROCESSING, not {filing.status.value}",
+            detail=f"Documents can only be submitted while the filing is in ON_BOARDING or PROCESSING, not {filing.status.value}. "
+                   f"Please wait for the appropriate stage before submitting documents.",
+        )
+
+    # Enforce: at least one document placeholder must exist
+    from app.models.filing_document import FilingDocument
+    from app.enums import DocumentStatus
+    doc_counts_result = await db.execute(
+        select(
+            func.count(FilingDocument.id).label("total"),
+            func.count(FilingDocument.id).filter(
+                FilingDocument.status.in_([DocumentStatus.UPLOADED, DocumentStatus.APPROVED])
+            ).label("ready"),
+            func.count(FilingDocument.id).filter(
+                FilingDocument.status == DocumentStatus.PENDING_UPLOAD
+            ).label("pending"),
+        ).where(FilingDocument.filing_id == filing_id)
+    )
+    doc_counts = doc_counts_result.one()
+
+    if (doc_counts.total or 0) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No document placeholders have been assigned yet. The Executive/Partner must assign documents before you can submit.",
+        )
+
+    if (doc_counts.ready or 0) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"No documents have been uploaded yet. Please upload your documents before submitting. "
+                   f"{doc_counts.pending} document(s) are still pending upload.",
+        )
+
+    if (doc_counts.pending or 0) > 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot submit: {doc_counts.pending} document(s) are still pending upload. "
+                   f"Please upload all required documents before submitting.",
         )
 
     from datetime import datetime
@@ -506,6 +565,31 @@ async def mark_payment_received(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
 
     await enforce_filing_access(db, current_user, filing.client_id)
+
+    # Must be in PAYMENT state
+    if filing.status != FilingStatus.PAYMENT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot mark payment received: Filing is in '{filing.status.value}' state, not PAYMENT. "
+                   f"The filing must be in PAYMENT state before payment can be marked as received.",
+        )
+
+    # Verify all 3 required completed docs exist before allowing COMPLETED
+    from app.enums import CompletedDocType
+    from app.models.filing_completed_doc import FilingCompletedDoc
+
+    required_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON}
+    existing_result = await db.execute(
+        select(FilingCompletedDoc.doc_type).where(FilingCompletedDoc.filing_id == filing_id)
+    )
+    existing_types = {row[0] for row in existing_result.all()}
+    missing = required_types - existing_types
+    if missing:
+        missing_names = [t.value for t in missing]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot mark payment as completed. The following documents are still missing: {', '.join(missing_names)}",
+        )
 
     filing = await transition_filing_status(
         db=db,

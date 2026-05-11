@@ -149,12 +149,22 @@ async def assign_documents_to_filing(
 
     await enforce_filing_access(db, current_user, filing.client_id)
 
-    # Allow assigning/re-assigning documents in INITIATED or ON_BOARDING
-    if filing.status not in (FilingStatus.INITIATED, FilingStatus.ON_BOARDING):
+    # Allow assigning/re-assigning documents in INITIATED, ON_BOARDING, or PROCESSING
+    # (PROCESSING is needed after COMPUTATION → PROCESSING backward transition to add new docs)
+    if filing.status not in (FilingStatus.INITIATED, FilingStatus.ON_BOARDING, FilingStatus.PROCESSING):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot assign documents when filing is in {filing.status.value} state",
         )
+
+    # Check executive is assigned before moving to ON_BOARDING
+    if filing.status == FilingStatus.INITIATED:
+        if not filing.assigned_executive_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="An Executive must be assigned to this client before document placeholders can be assigned. "
+                       "Please assign an Executive first via the Executive Management page.",
+            )
 
     placeholders = await assign_document_placeholders(
         db=db,
@@ -274,11 +284,16 @@ async def get_document_upload_url(
 
     await enforce_filing_access(db, current_user, filing.client_id)
 
+    # Fetch client name for readable MinIO path
+    client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_user_result.scalar_one_or_none()
+
     object_key = generate_object_key(
         client_id=str(filing.client_id),
         financial_year=filing.financial_year,
         folder="documents_required",
         filename=body.filename,
+        client_name=client_user.full_name if client_user else "",
     )
 
     upload_url = get_presigned_upload_url(object_key, body.content_type)
@@ -302,6 +317,31 @@ async def confirm_document_upload(
 ):
     """Confirm a document upload after the client uploads to MinIO."""
     from app.config import settings
+
+    # Verify the document placeholder exists and check filing state
+    doc_check = await db.execute(select(FilingDocument).where(FilingDocument.id == document_id))
+    doc_placeholder = doc_check.scalar_one_or_none()
+    if not doc_placeholder:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document placeholder not found")
+
+    filing_check = await db.execute(select(ITRFiling).where(ITRFiling.id == doc_placeholder.filing_id))
+    filing_for_doc = filing_check.scalar_one_or_none()
+
+    # Documents can only be uploaded in ON_BOARDING or PROCESSING states
+    if filing_for_doc and filing_for_doc.status not in (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot upload documents: Filing is in '{filing_for_doc.status.value}' state. "
+                   f"Documents can only be uploaded when the filing is in ON_BOARDING or PROCESSING state.",
+        )
+
+    # Only PENDING_UPLOAD or REJECTED docs can be uploaded to
+    if doc_placeholder.status not in (DocumentStatus.PENDING_UPLOAD, DocumentStatus.REJECTED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot upload to this document: it is already '{doc_placeholder.status.value}'. "
+                   f"Only documents with 'PENDING_UPLOAD' or 'REJECTED' status accept uploads.",
+        )
 
     # Reuse existing StoredFile if same bucket/object_key (idempotent retry)
     existing_file_result = await db.execute(

@@ -79,6 +79,9 @@ async def transition_filing_status(
     now = datetime.utcnow()
     if to_status == FilingStatus.ON_BOARDING:
         filing.onboarding_completed_at = now
+    elif to_status == FilingStatus.PROCESSING and from_status == FilingStatus.COMPUTATION:
+        filing.documents_approved_at = None  # Reset since we're going back for more docs
+        filing.documents_submitted_at = None
     elif to_status == FilingStatus.COMPUTATION:
         filing.documents_approved_at = now
     elif to_status == FilingStatus.FILING:

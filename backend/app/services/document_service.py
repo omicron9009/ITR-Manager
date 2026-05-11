@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
+from fastapi import HTTPException, status as http_status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,24 +110,44 @@ async def approve_documents(
     document_ids: list[UUID],
     reviewed_by: UUID,
 ) -> list[FilingDocument]:
-    """Approve one or more documents."""
+    """Approve one or more documents. Only UPLOADED documents can be approved."""
     approved = []
     for doc_id in document_ids:
         result = await db.execute(select(FilingDocument).where(FilingDocument.id == doc_id))
         doc = result.scalar_one_or_none()
-        if doc:
-            doc.status = DocumentStatus.APPROVED
-            doc.reviewed_by = reviewed_by
-            doc.reviewed_at = datetime.utcnow()
-            approved.append(doc)
+        if not doc:
+            continue
 
-            await record_audit_event(
-                db=db,
-                event_type=AuditEventType.DOCUMENT_APPROVED,
-                actor_id=reviewed_by,
-                filing_id=doc.filing_id,
-                document_id=doc_id,
+        # Verify filing is in PROCESSING state
+        filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
+        filing = filing_result.scalar_one_or_none()
+        if filing and filing.status != FilingStatus.PROCESSING:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail=f"Cannot approve documents: Filing is in '{filing.status.value}' state. "
+                       f"Documents can only be approved when the filing is in PROCESSING state.",
             )
+
+        # Only UPLOADED docs can be approved
+        if doc.status != DocumentStatus.UPLOADED:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail=f"Cannot approve document: Document is in '{doc.status.value}' status. "
+                       f"Only documents with 'UPLOADED' status can be approved.",
+            )
+
+        doc.status = DocumentStatus.APPROVED
+        doc.reviewed_by = reviewed_by
+        doc.reviewed_at = datetime.utcnow()
+        approved.append(doc)
+
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.DOCUMENT_APPROVED,
+            actor_id=reviewed_by,
+            filing_id=doc.filing_id,
+            document_id=doc_id,
+        )
 
     await db.flush()
     return approved
@@ -148,32 +169,52 @@ async def reject_documents(
             select(FilingDocument).where(FilingDocument.id == item["document_id"])
         )
         doc = result.scalar_one_or_none()
-        if doc:
-            doc.status = DocumentStatus.REJECTED
-            doc.rejection_reason = item["reason"]
-            doc.reviewed_by = reviewed_by
-            doc.reviewed_at = datetime.utcnow()
-            # Reset file_id so client must re-upload
-            doc.file_id = None
-            doc.uploaded_at = None
-            rejected.append(doc)
+        if not doc:
+            continue
 
-            # Get document type name for notification
-            dt_result = await db.execute(
-                select(MasterDocumentType).where(MasterDocumentType.id == doc.document_type_id)
+        # Verify filing is in PROCESSING state
+        filing_check = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
+        filing_obj = filing_check.scalar_one_or_none()
+        if filing_obj and filing_obj.status != FilingStatus.PROCESSING:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail=f"Cannot reject documents: Filing is in '{filing_obj.status.value}' state. "
+                       f"Documents can only be rejected when the filing is in PROCESSING state.",
             )
-            dt = dt_result.scalar_one_or_none()
-            if dt:
-                rejected_names.append(dt.name)
 
-            await record_audit_event(
-                db=db,
-                event_type=AuditEventType.DOCUMENT_REJECTED,
-                actor_id=reviewed_by,
-                filing_id=doc.filing_id,
-                document_id=doc.id,
-                details={"reason": item["reason"]},
+        # Only UPLOADED docs can be rejected
+        if doc.status != DocumentStatus.UPLOADED:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail=f"Cannot reject document: Document is in '{doc.status.value}' status. "
+                       f"Only documents with 'UPLOADED' status can be rejected.",
             )
+
+        doc.status = DocumentStatus.REJECTED
+        doc.rejection_reason = item["reason"]
+        doc.reviewed_by = reviewed_by
+        doc.reviewed_at = datetime.utcnow()
+        # Reset file_id so client must re-upload
+        doc.file_id = None
+        doc.uploaded_at = None
+        rejected.append(doc)
+
+        # Get document type name for notification
+        dt_result = await db.execute(
+            select(MasterDocumentType).where(MasterDocumentType.id == doc.document_type_id)
+        )
+        dt = dt_result.scalar_one_or_none()
+        if dt:
+            rejected_names.append(dt.name)
+
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.DOCUMENT_REJECTED,
+            actor_id=reviewed_by,
+            filing_id=doc.filing_id,
+            document_id=doc.id,
+            details={"reason": item["reason"]},
+        )
 
     # Notify client about rejections
     if rejected_names:

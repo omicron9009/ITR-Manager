@@ -68,13 +68,23 @@ async def activate_client(
     ip_address: Optional[str] = None,
 ) -> User:
     """Activate a client account (Partner action)."""
+    from fastapi import HTTPException, status as http_status
+
     result = await db.execute(select(User).where(User.id == client_id))
     client = result.scalar_one_or_none()
     if not client:
         from app.core.exceptions import ClientNotFoundError
         raise ClientNotFoundError()
 
+    # Verify account is in PENDING_VERIFICATION state before activating
+    if client.account_status != AccountStatus.PENDING_VERIFICATION:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=f"Client account is in '{client.account_status.value}' state, not PENDING_VERIFICATION. Cannot activate.",
+        )
+
     client.account_status = AccountStatus.ACTIVE
+    client.is_active = True
     client.activated_at = datetime.utcnow()
     client.activated_by = activated_by
 

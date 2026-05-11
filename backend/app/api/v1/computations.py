@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import enforce_filing_access
@@ -44,6 +44,19 @@ async def get_computation_upload_url(
 
     await enforce_filing_access(db, current_user, filing.client_id)
 
+    # Computation can only be uploaded in COMPUTATION state (or FILING for revisions)
+    if filing.status not in (FilingStatus.COMPUTATION, FilingStatus.FILING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot upload computation: Filing is in '{filing.status.value}' state. "
+                   f"Computation can only be uploaded when the filing is in COMPUTATION state "
+                   f"(all documents must be approved first).",
+        )
+
+    # Fetch client name for readable MinIO path
+    client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_user_result.scalar_one_or_none()
+
     # Determine next version number
     version_result = await db.execute(
         select(FilingComputation)
@@ -69,6 +82,7 @@ async def get_computation_upload_url(
         financial_year=filing.financial_year,
         folder="computation",
         filename=body.filename,
+        client_name=client_user.full_name if client_user else "",
     )
 
     upload_url = get_presigned_upload_url(object_key, body.content_type)
@@ -240,6 +254,36 @@ async def approve_computation(
 
     if filing.client_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
+
+    # Validate filing is in COMPUTATION state
+    if filing.status != FilingStatus.COMPUTATION:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot approve computation: Filing is in '{filing.status.value}' state, not COMPUTATION. "
+                   f"The computation can only be approved when the filing is in COMPUTATION state.",
+        )
+
+    # Validate computation is in UPLOADED status (not already APPROVED or SUPERSEDED)
+    if computation.status != ComputationStatus.UPLOADED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot approve computation: Computation is in '{computation.status.value}' status. "
+                   f"Only computations with 'UPLOADED' status can be approved.",
+        )
+
+    # Verify there is at least one active (UPLOADED) computation
+    active_comps_result = await db.execute(
+        select(func.count()).select_from(FilingComputation).where(
+            FilingComputation.filing_id == filing.id,
+            FilingComputation.status == ComputationStatus.UPLOADED,
+        )
+    )
+    active_count = active_comps_result.scalar() or 0
+    if active_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No active computation found to approve. The Executive/Partner must upload a computation first.",
+        )
 
     # Approve computation
     from datetime import datetime

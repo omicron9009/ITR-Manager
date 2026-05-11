@@ -23,9 +23,21 @@ class DuplicateFilingError(HTTPException):
 
 class InvalidStateTransitionError(HTTPException):
     def __init__(self, from_status: str, to_status: str):
+        valid_map = {
+            "INITIATED": "ON_BOARDING (assign document placeholders)",
+            "ON_BOARDING": "PROCESSING (client submits documents)",
+            "PROCESSING": "COMPUTATION (all documents approved) or ON_BOARDING",
+            "COMPUTATION": "FILING (client approves computation) or PROCESSING (request more docs)",
+            "FILING": "PAYMENT (Executive marks filed + uploads docs)",
+            "PAYMENT": "COMPLETED (payment received)",
+        }
+        hint = valid_map.get(from_status, "")
+        detail = f"Invalid state transition from {from_status} to {to_status}."
+        if hint:
+            detail += f" From {from_status}, valid next states are: {hint}."
         super().__init__(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid state transition from {from_status} to {to_status}",
+            detail=detail,
         )
 
 
@@ -46,5 +58,38 @@ class ExecutiveNotAssignedError(HTTPException):
     def __init__(self):
         super().__init__(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="An Executive must be assigned before proceeding",
+            detail="Cannot transition to ON_BOARDING: No Executive is assigned to this client. "
+                   "The Partner must assign an Executive before document placeholders can be set.",
+        )
+
+
+class ComputationNotUploadedError(HTTPException):
+    def __init__(self):
+        super().__init__(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No computation document has been uploaded. The Executive/Partner must upload a computation before the client can approve.",
+        )
+
+
+class DocumentsNotAllApprovedError(HTTPException):
+    def __init__(self, pending: int, rejected: int):
+        super().__init__(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Not all documents are approved. {pending} pending upload, {rejected} rejected. All documents must be approved before computation.",
+        )
+
+
+class FilingDocumentsNotUploadedError(HTTPException):
+    def __init__(self, missing_types: list[str]):
+        super().__init__(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"The following required documents must be uploaded before proceeding: {', '.join(missing_types)}",
+        )
+
+
+class OnboardingFormNotSubmittedError(HTTPException):
+    def __init__(self):
+        super().__init__(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="You must fill and submit the onboarding form before initiating a filing. Please complete your profile first.",
         )
