@@ -9,8 +9,9 @@ from minio import Minio
 
 from app.config import settings
 
-# Lazy-initialized MinIO client
+# Lazy-initialized MinIO clients
 _minio_client: Optional[Minio] = None
+_minio_public_client: Optional[Minio] = None
 
 
 def _get_client() -> Minio:
@@ -24,6 +25,20 @@ def _get_client() -> Minio:
             secure=settings.MINIO_USE_SSL,
         )
     return _minio_client
+
+
+def _get_public_client() -> Minio:
+    """Get or create a MinIO client using the public endpoint for presigned URLs."""
+    global _minio_public_client
+    if _minio_public_client is None:
+        endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
+        _minio_public_client = Minio(
+            endpoint,
+            access_key=settings.MINIO_ACCESS_KEY,
+            secret_key=settings.MINIO_SECRET_KEY,
+            secure=settings.MINIO_USE_SSL,
+        )
+    return _minio_public_client
 
 
 def ensure_bucket_exists():
@@ -64,30 +79,18 @@ def generate_pan_object_key(client_id: str, filename: str, client_name: str = ""
     return f"clients/{client_dir}/pan/{unique_prefix}_{filename}"
 
 
-def _rewrite_url_to_public(url: str) -> str:
-    """Replace the internal MinIO endpoint with the public one in presigned URLs."""
-    public = settings.MINIO_PUBLIC_ENDPOINT
-    if not public:
-        return url
-    # Replace the internal endpoint host:port with the public one
-    internal = settings.MINIO_ENDPOINT
-    scheme = "https" if settings.MINIO_USE_SSL else "http"
-    url = url.replace(f"{scheme}://{internal}", f"{scheme}://{public}")
-    return url
-
-
 def get_presigned_upload_url(
     object_key: str,
     content_type: str,
     expires: timedelta = timedelta(hours=1),
 ) -> str:
     """Generate a pre-signed PUT URL for file upload."""
-    url = _get_client().presigned_put_object(
+    url = _get_public_client().presigned_put_object(
         bucket_name=settings.MINIO_BUCKET_NAME,
         object_name=object_key,
         expires=expires,
     )
-    return _rewrite_url_to_public(url)
+    return url
 
 
 def get_presigned_download_url(
@@ -96,16 +99,15 @@ def get_presigned_download_url(
     filename: Optional[str] = None,
 ) -> str:
     """Generate a pre-signed GET URL for file download."""
-    from minio.commonconfig import CopySource
     from urllib.parse import quote
 
     response_headers = {}
     if filename:
         response_headers["response-content-disposition"] = f'attachment; filename="{quote(filename)}"'
 
-    url = _get_client().presigned_get_object(
+    url = _get_public_client().presigned_get_object(
         bucket_name=settings.MINIO_BUCKET_NAME,
         object_name=object_key,
         expires=expires,
     )
-    return _rewrite_url_to_public(url)
+    return url
