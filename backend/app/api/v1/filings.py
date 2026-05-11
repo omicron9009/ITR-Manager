@@ -311,12 +311,13 @@ async def transition_filing(
     #   - any state → HALTED (halt)
     #   - HALTED → any valid state (resume)
     #   - INITIATED → ON_BOARDING (assign documents handles this, but allow here for idempotency)
-    #   - FILING → PAYMENT (exec/partner marks ITR as filed)
-    #   - PAYMENT → COMPLETED (exec/partner marks payment received)
+    #   - COMPUTATION → PROCESSING (request more docs)
     # Blocked (must use dedicated endpoint):
-    #   - ON_BOARDING → PROCESSING (use: submit documents)
-    #   - PROCESSING → COMPUTATION (use: approve all documents)
+    #   - ON_BOARDING → PROCESSING (auto: happens when all documents approved)
+    #   - PROCESSING → COMPUTATION (auto: happens when all documents approved)
     #   - COMPUTATION → FILING (use: client approves computation)
+    #   - FILING → PAYMENT (auto: when all 3 completed docs uploaded)
+    #   - PAYMENT → COMPLETED (use: mark payment received)
     is_halt = body.to_status == FilingStatus.HALTED
     is_resume = filing.status == FilingStatus.HALTED
     is_already_in_target = filing.status == body.to_status
@@ -358,7 +359,7 @@ async def transition_filing(
     if not (is_halt or is_resume or is_allowed_forward):
         # Build a helpful message based on what the user tried to do
         transition_hints = {
-            (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING): "Use 'Submit Documents' — the client must upload and submit documents.",
+            (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING): "Use 'Approve Documents' — all documents must be approved by Executive/Partner first. Filing stays in ON_BOARDING until then.",
             (FilingStatus.PROCESSING, FilingStatus.COMPUTATION): "Use 'Approve Documents' — all documents must be approved by Executive/Partner.",
             (FilingStatus.COMPUTATION, FilingStatus.FILING): "Use 'Approve Computation' — the client must approve the computation.",
             (FilingStatus.FILING, FilingStatus.PAYMENT): "Upload all 3 required documents (Acknowledgement, Invoice, ITR JSON) via the completed docs upload.",
@@ -511,16 +512,8 @@ async def submit_documents(
     from datetime import datetime
     filing.documents_submitted_at = datetime.utcnow()
 
-    # Transition to PROCESSING if currently in ON_BOARDING
-    if filing.status == FilingStatus.ON_BOARDING:
-        filing = await transition_filing_status(
-            db=db,
-            filing=filing,
-            to_status=FilingStatus.PROCESSING,
-            changed_by=current_user.id,
-            remarks="Documents submitted by client",
-            ip_address=request.client.host if request.client else None,
-        )
+    # Filing stays in ON_BOARDING — it only moves to PROCESSING once
+    # the Executive/Partner has approved ALL documents.
 
     # Notify partner + executive on every submission (initial or re-submission after rejection)
     partner_result = await db.execute(

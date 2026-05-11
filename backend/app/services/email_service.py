@@ -34,6 +34,20 @@ async def _get_gmail_service(db: AsyncSession):
         from googleapiclient.discovery import build
 
         token_data = json.loads(config.token_json)
+        creds_data = json.loads(config.credentials_json)
+
+        # Extract client_id and client_secret from the OAuth credentials
+        # (may be under "installed" or "web" key)
+        client_info = creds_data.get("installed") or creds_data.get("web") or {}
+
+        # Ensure token_data has all required fields for from_authorized_user_info
+        if "client_id" not in token_data:
+            token_data["client_id"] = client_info.get("client_id", "")
+        if "client_secret" not in token_data:
+            token_data["client_secret"] = client_info.get("client_secret", "")
+        if "token_uri" not in token_data:
+            token_data["token_uri"] = client_info.get("token_uri", "https://oauth2.googleapis.com/token")
+
         creds = Credentials.from_authorized_user_info(token_data)
 
         # Refresh if expired

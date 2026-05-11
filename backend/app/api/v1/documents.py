@@ -454,11 +454,23 @@ async def approve_filing_documents(
 
     result_msg = f"{len(approved)} document(s) approved"
     if all_approved:
-        # Transition to COMPUTATION
+        # All documents approved — auto-transition to COMPUTATION
         filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
         filing = filing_result.scalar_one_or_none()
-        if filing and filing.status == FilingStatus.PROCESSING:
+        if filing and filing.status in (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING):
             from app.services.filing_service import transition_filing_status
+
+            # If still in ON_BOARDING, step through PROCESSING first
+            if filing.status == FilingStatus.ON_BOARDING:
+                filing = await transition_filing_status(
+                    db=db,
+                    filing=filing,
+                    to_status=FilingStatus.PROCESSING,
+                    changed_by=current_user.id,
+                    remarks="All documents approved — auto-advancing",
+                )
+
+            # PROCESSING → COMPUTATION
             await transition_filing_status(
                 db=db,
                 filing=filing,
