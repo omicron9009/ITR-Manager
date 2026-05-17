@@ -3,6 +3,7 @@
 import uuid
 from datetime import datetime
 
+import sqlalchemy as sa
 from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -25,6 +26,9 @@ class FilingComputation(Base):
     uploaded_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
+    rejected_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    rejected_at = Column(DateTime(timezone=True), nullable=True)
+    rejection_reason = Column(sa.Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
@@ -32,6 +36,7 @@ class FilingComputation(Base):
     file = relationship("StoredFile", foreign_keys=[file_id])
     uploader = relationship("User", foreign_keys=[uploaded_by])
     approver = relationship("User", foreign_keys=[approved_by])
+    rejector = relationship("User", foreign_keys=[rejected_by])
 
     __table_args__ = (
         UniqueConstraint("filing_id", "version", name="uq_filing_computation_version"),

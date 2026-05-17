@@ -17,6 +17,7 @@ from app.models.user import User
 from app.schemas.computation import (
     ComputationApproveRequest,
     ComputationListResponse,
+    ComputationRejectRequest,
     ComputationResponse,
     ComputationUploadRequest,
     ComputationUploadURLResponse,
@@ -223,6 +224,9 @@ async def get_filing_computations(
             uploaded_at=comp.uploaded_at,
             approved_by=comp.approved_by,
             approved_at=comp.approved_at,
+            rejected_by=comp.rejected_by,
+            rejected_at=comp.rejected_at,
+            rejection_reason=comp.rejection_reason,
         )
         items.append(item)
 
@@ -336,6 +340,93 @@ async def approve_computation(
         )
 
     return {"message": "Computation approved. Filing moved to FILING state."}
+
+
+# ─── POST /computations/reject ──────────────────────────────
+@router.post("/reject", response_model=dict)
+async def reject_computation(
+    body: ComputationRejectRequest,
+    request: Request,
+    current_user: User = Depends(get_current_active_client),
+    db: AsyncSession = Depends(get_db),
+):
+    """Client rejects the computation. Filing stays in COMPUTATION state for re-upload."""
+    comp_result = await db.execute(
+        select(FilingComputation).where(FilingComputation.id == body.computation_id)
+    )
+    computation = comp_result.scalar_one_or_none()
+    if not computation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computation not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == computation.filing_id))
+    filing = filing_result.scalar_one_or_none()
+
+    if filing.client_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
+
+    # Validate filing is in COMPUTATION state
+    if filing.status != FilingStatus.COMPUTATION:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot reject computation: Filing is in '{filing.status.value}' state, not COMPUTATION.",
+        )
+
+    # Validate computation is in UPLOADED status
+    if computation.status != ComputationStatus.UPLOADED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot reject computation: Computation is in '{computation.status.value}' status. "
+                   f"Only computations with 'UPLOADED' status can be rejected.",
+        )
+
+    # Reject computation
+    from datetime import datetime
+    computation.status = ComputationStatus.REJECTED
+    computation.rejected_by = current_user.id
+    computation.rejected_at = datetime.utcnow()
+    computation.rejection_reason = body.reason
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.COMPUTATION_REJECTED,
+        actor_id=current_user.id,
+        client_id=current_user.id,
+        filing_id=filing.id,
+        document_id=computation.id,
+        details={"version": computation.version, "reason": body.reason},
+    )
+
+    # Notify Partner + assigned Executive
+    partner_result = await db.execute(
+        select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+    )
+    partner = partner_result.scalar_one_or_none()
+    if partner:
+        await create_notification(
+            db=db,
+            user_id=partner.id,
+            title="Computation Rejected",
+            message=f"Computation (v{computation.version}) rejected by {current_user.full_name} "
+                    f"for {filing.financial_year}. Reason: {body.reason}",
+            related_filing_id=filing.id,
+            related_client_id=current_user.id,
+        )
+
+    if filing.assigned_executive_id:
+        await create_notification(
+            db=db,
+            user_id=filing.assigned_executive_id,
+            title="Computation Rejected",
+            message=f"Computation (v{computation.version}) rejected by {current_user.full_name} "
+                    f"for {filing.financial_year}. Reason: {body.reason}",
+            related_filing_id=filing.id,
+            related_client_id=current_user.id,
+        )
+
+    return {
+        "message": "Computation rejected. The Executive/Partner can upload a revised computation.",
+        "version_rejected": computation.version,
+    }
 
 
 # ─── GET /computations/{computation_id}/download-url ─────────

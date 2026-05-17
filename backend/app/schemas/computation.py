@@ -34,6 +34,9 @@ class ComputationResponse(BaseModel):
     uploaded_at: datetime
     approved_by: Optional[UUID] = None
     approved_at: Optional[datetime] = None
+    rejected_by: Optional[UUID] = None
+    rejected_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -45,3 +48,8 @@ class ComputationListResponse(BaseModel):
 
 class ComputationApproveRequest(BaseModel):
     computation_id: UUID
+
+
+class ComputationRejectRequest(BaseModel):
+    computation_id: UUID
+    reason: str

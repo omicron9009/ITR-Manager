@@ -17,6 +17,7 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     full_name: str
+    phone_number: Optional[str] = None
     role: str
     account_status: str
     is_active: bool
@@ -50,6 +51,7 @@ class ClientRegistrationRequest(BaseModel):
     email: EmailStr
     full_name: str = Field(..., min_length=1, max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
+    phone_number: Optional[str] = Field(None, max_length=20)
 
 
 class ClientRegistrationResponse(BaseModel):
@@ -87,6 +89,9 @@ class ClientProfileUpdate(BaseModel):
 class ClientProfileResponse(BaseModel):
     id: UUID
     user_id: UUID
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
     pan_number: Optional[str] = None
     aadhaar_number: Optional[str] = None
     date_of_birth: Optional[date] = None
@@ -107,6 +112,7 @@ class ClientListItem(BaseModel):
     id: UUID
     full_name: str
     email: str
+    phone_number: Optional[str] = None
     account_status: str
     assigned_executive_name: Optional[str] = None
     assigned_executive_id: Optional[UUID] = None

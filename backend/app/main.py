@@ -123,6 +123,9 @@ async def _create_tables():
 
         # Ensure PostgreSQL enums have all values defined in Python enums
         await _sync_pg_enums()
+
+        # Ensure new columns exist on existing tables
+        await _sync_new_columns()
     except Exception as e:
         logger.warning(f"Table creation skipped: {e}")
 
@@ -193,6 +196,74 @@ async def _sync_pg_enums():
         logger.info("PostgreSQL enum sync complete.")
     except Exception as e:
         logger.warning(f"Enum sync failed: {e}")
+
+
+async def _sync_new_columns():
+    """Add new columns to existing tables if they don't exist.
+
+    Uses raw asyncpg because SQLAlchemy's create_all does not add columns
+    to already-existing tables. This runs on every startup and is idempotent.
+    """
+    import asyncpg
+
+    # Define columns to ensure exist: (table, column, SQL type, default)
+    columns_to_sync = [
+        # phone_number on users table
+        ("users", "phone_number", "VARCHAR(20)", None),
+        # Computation rejection fields on filing_computations table
+        ("filing_computations", "rejected_by", "UUID", None),
+        ("filing_computations", "rejected_at", "TIMESTAMPTZ", None),
+        ("filing_computations", "rejection_reason", "TEXT", None),
+    ]
+
+    try:
+        conn = await asyncpg.connect(
+            host=settings.POSTGRES_HOST,
+            port=settings.POSTGRES_PORT,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            database=settings.POSTGRES_DB,
+        )
+
+        try:
+            for table, column, col_type, default in columns_to_sync:
+                # Check if column exists
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = $1 AND column_name = $2",
+                    table, column,
+                )
+                if not exists:
+                    default_clause = f" DEFAULT {default}" if default else ""
+                    await conn.execute(
+                        f'ALTER TABLE "{table}" ADD COLUMN "{column}" {col_type}{default_clause}'
+                    )
+                    logger.info(f"Added column '{column}' ({col_type}) to table '{table}'")
+
+            # Add FK constraint for rejected_by if not present
+            fk_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.table_constraints "
+                "WHERE constraint_name = 'fk_filing_computations_rejected_by' "
+                "AND table_name = 'filing_computations'"
+            )
+            if not fk_exists:
+                col_exists = await conn.fetchval(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'filing_computations' AND column_name = 'rejected_by'"
+                )
+                if col_exists:
+                    await conn.execute(
+                        'ALTER TABLE "filing_computations" '
+                        'ADD CONSTRAINT "fk_filing_computations_rejected_by" '
+                        'FOREIGN KEY ("rejected_by") REFERENCES "users"("id") ON DELETE SET NULL'
+                    )
+                    logger.info("Added FK constraint 'fk_filing_computations_rejected_by'")
+        finally:
+            await conn.close()
+
+        logger.info("Column sync complete.")
+    except Exception as e:
+        logger.warning(f"Column sync failed: {e}")
 
 
 async def _seed_admin_user():

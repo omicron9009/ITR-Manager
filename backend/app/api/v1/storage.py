@@ -316,16 +316,24 @@ async def get_completed_docs(
     await enforce_client_access(db, current_user, filing.client_id)
 
     # Clients can only view filed documents after COMPLETED state
+    # Exception: Invoice is visible as soon as it's uploaded (any state)
     if current_user.role == UserRole.CLIENT:
-        if filing.status != FilingStatus.COMPLETED:
-            return []
-        # Only show Acknowledgement and Invoice to client, not ITR JSON (internal)
-        result = await db.execute(
-            select(FilingCompletedDoc).where(
-                FilingCompletedDoc.filing_id == filing_id,
-                FilingCompletedDoc.doc_type.in_([CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE]),
+        if filing.status == FilingStatus.COMPLETED:
+            # Show Acknowledgement and Invoice once completed
+            result = await db.execute(
+                select(FilingCompletedDoc).where(
+                    FilingCompletedDoc.filing_id == filing_id,
+                    FilingCompletedDoc.doc_type.in_([CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE]),
+                )
             )
-        )
+        else:
+            # Before COMPLETED, only show Invoice if it exists
+            result = await db.execute(
+                select(FilingCompletedDoc).where(
+                    FilingCompletedDoc.filing_id == filing_id,
+                    FilingCompletedDoc.doc_type == CompletedDocType.INVOICE,
+                )
+            )
     else:
         result = await db.execute(
             select(FilingCompletedDoc).where(FilingCompletedDoc.filing_id == filing_id)

@@ -18,6 +18,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
+    phone_number = Column(String(20), nullable=True)
     role = Column(Enum(UserRole, name="user_role"), nullable=False)
     account_status = Column(
         Enum(AccountStatus, name="account_status"),

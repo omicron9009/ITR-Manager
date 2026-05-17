@@ -43,6 +43,7 @@ async def register_new_client(
         email=request_data.email,
         full_name=request_data.full_name,
         password_hash=hash_password(request_data.password),
+        phone_number=request_data.phone_number,
     )
     return ClientRegistrationResponse(
         id=user.id,
@@ -179,6 +180,7 @@ async def list_clients(
                 id=user.id,
                 full_name=user.full_name,
                 email=user.email,
+                phone_number=user.phone_number,
                 account_status=user.account_status.value,
                 assigned_executive_name=exec_name,
                 assigned_executive_id=exec_id,
@@ -209,7 +211,29 @@ async def get_client_profile(
         from fastapi import HTTPException, status
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client profile not found")
 
-    return profile
+    # Fetch user details for phone_number, full_name, email
+    user_result = await db.execute(select(User).where(User.id == client_id))
+    user = user_result.scalar_one_or_none()
+
+    from app.schemas.user import ClientProfileResponse
+    return ClientProfileResponse(
+        id=profile.id,
+        user_id=profile.user_id,
+        full_name=user.full_name if user else None,
+        email=user.email if user else None,
+        phone_number=user.phone_number if user else None,
+        pan_number=profile.pan_number,
+        aadhaar_number=profile.aadhaar_number,
+        date_of_birth=profile.date_of_birth,
+        contact_number=profile.contact_number,
+        address=profile.address,
+        income_type=profile.income_type,
+        bank_account_details=profile.bank_account_details,
+        form_data=profile.form_data or {},
+        form_submitted_at=profile.form_submitted_at,
+        created_at=profile.created_at,
+        updated_at=profile.updated_at,
+    )
 
 
 # ─── PUT /clients/{client_id}/profile ────────────────────────

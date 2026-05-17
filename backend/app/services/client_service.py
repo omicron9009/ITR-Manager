@@ -20,12 +20,14 @@ async def register_client(
     full_name: str,
     password_hash: str,
     pan_document_id: Optional[UUID] = None,
+    phone_number: Optional[str] = None,
 ) -> User:
     """Register a new client. Account starts in PENDING_VERIFICATION."""
     user = User(
         email=email,
         full_name=full_name,
         password_hash=password_hash,
+        phone_number=phone_number,
         role=UserRole.CLIENT,
         account_status=AccountStatus.PENDING_VERIFICATION,
         pan_document_id=pan_document_id,
