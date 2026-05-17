@@ -7,11 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.permissions import enforce_client_access
 from app.core.security import get_current_active_client, get_current_partner, get_current_user
 from app.database import get_db
-from app.enums import AuditEventType, FormFieldType
+from app.enums import AuditEventType, FormFieldType, UserRole
 from app.models.client_profile import ClientProfile
 from app.models.onboarding_form_field import OnboardingFormField
+from app.models.stored_file import StoredFile
 from app.models.user import User
 from app.schemas.onboarding import (
     FormFieldCreateRequest,
@@ -237,6 +239,57 @@ async def get_onboarding_form(
     )
 
 
+@router.get("/form/{client_id}", response_model=OnboardingFormResponse)
+async def get_client_onboarding_form(
+    client_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the onboarding form data submitted by a specific client.
+
+    - Client: can only view their own.
+    - Executive: can view assigned clients only.
+    - Partner: can view any client.
+    """
+    # Clients can only look up their own data
+    if current_user.role == UserRole.CLIENT and current_user.id != client_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only view your own onboarding data")
+
+    # Executive/Partner access check
+    if current_user.role in (UserRole.EXECUTIVE, UserRole.PARTNER):
+        await enforce_client_access(db, current_user, client_id)
+
+    # Get active fields
+    fields_result = await db.execute(
+        select(OnboardingFormField)
+        .where(OnboardingFormField.is_active == True)
+        .order_by(OnboardingFormField.display_order)
+    )
+    fields = fields_result.scalars().all()
+
+    # Get the client's profile
+    profile_result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == client_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+
+    submitted = False
+    submitted_data = None
+    submitted_at = None
+
+    if profile and profile.form_submitted_at:
+        submitted = True
+        submitted_data = profile.form_data
+        submitted_at = profile.form_submitted_at
+
+    return OnboardingFormResponse(
+        fields=[FormFieldResponse.model_validate(f) for f in fields],
+        submitted=submitted,
+        submitted_data=submitted_data,
+        submitted_at=submitted_at,
+    )
+
+
 @router.post("/form/submit", response_model=dict)
 async def submit_onboarding_form(
     body: OnboardingFormSubmitRequest,
@@ -287,6 +340,39 @@ async def submit_onboarding_form(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Invalid value '{value}' for field '{field.field_label}'. Allowed: {', '.join(field.field_options)}",
+            )
+
+    # ── Validate FILE fields reference actual uploaded stored_files ──
+    file_fields_result = await db.execute(
+        select(OnboardingFormField).where(
+            OnboardingFormField.is_active == True,
+            OnboardingFormField.field_type == FormFieldType.FILE,
+        )
+    )
+    file_fields = file_fields_result.scalars().all()
+
+    for field in file_fields:
+        value = body.form_data.get(field.field_key)
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            continue  # skip if empty (required check already handled above)
+        # Value must be a valid stored_file UUID owned by this client
+        try:
+            file_uuid = UUID(value)
+        except (ValueError, AttributeError):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Field '{field.field_label}' must be a valid file ID. Upload the file first via /storage/onboarding-upload-url.",
+            )
+        file_result = await db.execute(
+            select(StoredFile).where(
+                StoredFile.id == file_uuid,
+                StoredFile.uploaded_by == current_user.id,
+            )
+        )
+        if not file_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"File for field '{field.field_label}' not found or not uploaded by you.",
             )
 
     # Update profile with form data

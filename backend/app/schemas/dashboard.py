@@ -28,8 +28,6 @@ class PendingVerificationItem(BaseModel):
     id: UUID
     full_name: str
     email: str
-    pan_document_id: Optional[UUID] = None
-    pan_document_url: Optional[str] = None
     registered_at: datetime
 
     model_config = {"from_attributes": True}

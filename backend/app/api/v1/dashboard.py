@@ -148,7 +148,6 @@ async def get_pending_verifications(
             id=c.id,
             full_name=c.full_name,
             email=c.email,
-            pan_document_id=c.pan_document_id,
             registered_at=c.created_at,
         )
         for c in clients

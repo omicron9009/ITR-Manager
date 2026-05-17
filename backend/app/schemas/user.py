@@ -101,6 +101,8 @@ class ClientProfileResponse(BaseModel):
     bank_account_details: Optional[str] = None
     form_data: dict[str, Any] = {}
     form_submitted_at: Optional[datetime] = None
+    assigned_executive_id: Optional[UUID] = None
+    assigned_executive_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

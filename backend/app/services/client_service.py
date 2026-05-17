@@ -12,6 +12,7 @@ from app.models.client_profile import ClientProfile
 from app.models.user import User
 from app.services.audit_service import record_audit_event
 from app.services.notification_service import create_notification
+from app.services.storage_service import create_client_directory, ensure_bucket_exists
 
 
 async def register_client(
@@ -19,7 +20,6 @@ async def register_client(
     email: str,
     full_name: str,
     password_hash: str,
-    pan_document_id: Optional[UUID] = None,
     phone_number: Optional[str] = None,
 ) -> User:
     """Register a new client. Account starts in PENDING_VERIFICATION."""
@@ -30,7 +30,6 @@ async def register_client(
         phone_number=phone_number,
         role=UserRole.CLIENT,
         account_status=AccountStatus.PENDING_VERIFICATION,
-        pan_document_id=pan_document_id,
     )
     db.add(user)
     await db.flush()
@@ -104,6 +103,10 @@ async def activate_client(
         title="Account Verified",
         message="Your account has been verified. You may now initiate your ITR filing.",
     )
+
+    # Create the client's base directory in MinIO
+    ensure_bucket_exists()
+    create_client_directory(str(client_id), client.full_name)
 
     await db.flush()
     return client

@@ -215,6 +215,24 @@ async def get_client_profile(
     user_result = await db.execute(select(User).where(User.id == client_id))
     user = user_result.scalar_one_or_none()
 
+    # Fetch assigned executive
+    from app.models.executive_assignment import ExecutiveClientAssignment
+    exec_result = await db.execute(
+        select(ExecutiveClientAssignment).where(
+            ExecutiveClientAssignment.client_id == client_id,
+            ExecutiveClientAssignment.is_active == True,
+        )
+    )
+    assignment = exec_result.scalar_one_or_none()
+    exec_id = None
+    exec_name = None
+    if assignment:
+        exec_user_result = await db.execute(select(User).where(User.id == assignment.executive_id))
+        exec_user = exec_user_result.scalar_one_or_none()
+        if exec_user:
+            exec_id = exec_user.id
+            exec_name = exec_user.full_name
+
     from app.schemas.user import ClientProfileResponse
     return ClientProfileResponse(
         id=profile.id,
@@ -231,6 +249,8 @@ async def get_client_profile(
         bank_account_details=profile.bank_account_details,
         form_data=profile.form_data or {},
         form_submitted_at=profile.form_submitted_at,
+        assigned_executive_id=exec_id,
+        assigned_executive_name=exec_name,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
     )

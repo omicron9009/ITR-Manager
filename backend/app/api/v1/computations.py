@@ -25,7 +25,7 @@ from app.schemas.computation import (
 from app.services.audit_service import record_audit_event
 from app.services.filing_service import transition_filing_status
 from app.services.notification_service import create_notification
-from app.services.storage_service import generate_object_key, get_presigned_download_url, get_presigned_upload_url
+from app.services.storage_service import generate_object_key, get_presigned_download_url, get_presigned_upload_url, validate_object_key_prefix
 
 router = APIRouter()
 
@@ -118,6 +118,18 @@ async def confirm_computation_upload(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
 
     await enforce_filing_access(db, current_user, filing.client_id)
+
+    # Validate object_key belongs to this client's computation folder
+    client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_user_result.scalar_one_or_none()
+    try:
+        validate_object_key_prefix(
+            object_key, str(filing.client_id),
+            client_user.full_name if client_user else "",
+            f"ITR-{filing.financial_year}/computation",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     # Create stored file record
     stored_file = StoredFile(

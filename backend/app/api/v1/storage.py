@@ -7,48 +7,83 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_user
+from app.core.security import get_current_active_client, get_current_user
 from app.database import get_db
-from app.enums import CompletedDocType, FilingStatus, UserRole
+from app.enums import CompletedDocType, FilingStatus, FormFieldType, UserRole
 from app.models.filing import ITRFiling
 from app.models.filing_completed_doc import FilingCompletedDoc
+from app.models.onboarding_form_field import OnboardingFormField
 from app.models.stored_file import StoredFile
 from app.models.user import User
-from app.services.storage_service import generate_pan_object_key, get_presigned_download_url, get_presigned_upload_url
+from app.services.storage_service import (
+    generate_onboarding_object_key,
+    get_presigned_download_url,
+    get_presigned_upload_url,
+    validate_object_key_prefix,
+)
 
 router = APIRouter()
 
 
-# ─── POST /storage/pan-upload-url ────────────────────────────
-@router.post("/pan-upload-url", response_model=dict)
-async def get_pan_upload_url(
+# ─── POST /storage/onboarding-upload-url ─────────────────────
+@router.post("/onboarding-upload-url", response_model=dict)
+async def get_onboarding_upload_url(
+    field_key: str = Query(..., description="Onboarding form field key (must be a FILE type field)"),
     filename: str = Query(...),
     content_type: str = Query(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_client),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a pre-signed URL for PAN document upload during registration."""
-    object_key = generate_pan_object_key(str(current_user.id), filename, client_name=current_user.full_name)
+    """Get a pre-signed URL for uploading a file attached to an onboarding form field."""
+    # Validate that the field_key exists and is a FILE type
+    field_result = await db.execute(
+        select(OnboardingFormField).where(
+            OnboardingFormField.field_key == field_key,
+            OnboardingFormField.is_active == True,
+        )
+    )
+    field = field_result.scalar_one_or_none()
+    if not field:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Form field '{field_key}' not found")
+    if field.field_type != FormFieldType.FILE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Field '{field_key}' is not a FILE type field",
+        )
+
+    object_key = generate_onboarding_object_key(
+        client_id=str(current_user.id),
+        client_name=current_user.full_name,
+        field_label=field.field_label,
+        filename=filename,
+    )
     upload_url = get_presigned_upload_url(object_key, content_type)
 
     return {
         "upload_url": upload_url,
         "object_key": object_key,
+        "field_key": field_key,
     }
 
 
-# ─── POST /storage/confirm-pan-upload ────────────────────────
-@router.post("/confirm-pan-upload", response_model=dict)
-async def confirm_pan_upload(
+# ─── POST /storage/confirm-onboarding-upload ─────────────────
+@router.post("/confirm-onboarding-upload", response_model=dict)
+async def confirm_onboarding_upload(
+    field_key: str = Query(...),
     object_key: str = Query(...),
     filename: str = Query(...),
     content_type: str = Query(...),
     file_size: int = Query(..., gt=0),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_client),
     db: AsyncSession = Depends(get_db),
 ):
-    """Confirm PAN document upload and link it to user record."""
+    """Confirm an onboarding file upload and return a stored_file ID to use in form_data."""
     from app.config import settings
+
+    try:
+        validate_object_key_prefix(object_key, str(current_user.id), current_user.full_name, "onboarding")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     stored_file = StoredFile(
         bucket=settings.MINIO_BUCKET_NAME,
@@ -61,11 +96,11 @@ async def confirm_pan_upload(
     db.add(stored_file)
     await db.flush()
 
-    # Link to user
-    current_user.pan_document_id = stored_file.id
-    await db.flush()
-
-    return {"message": "PAN document uploaded successfully", "file_id": str(stored_file.id)}
+    return {
+        "message": "Onboarding file uploaded successfully",
+        "file_id": str(stored_file.id),
+        "field_key": field_key,
+    }
 
 
 # ─── POST /storage/completed-doc/upload-url ──────────────────
@@ -143,6 +178,18 @@ async def confirm_completed_doc_upload(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
 
     await enforce_client_access(db, current_user, filing.client_id)
+
+    # Validate object_key belongs to this client's filed_documents folder
+    client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_user_result.scalar_one_or_none()
+    try:
+        validate_object_key_prefix(
+            object_key, str(filing.client_id),
+            client_user.full_name if client_user else "",
+            f"ITR-{filing.financial_year}/filed_documents",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     # Validate filing state for the doc type
     if doc_type == CompletedDocType.ITR_ACKNOWLEDGEMENT:

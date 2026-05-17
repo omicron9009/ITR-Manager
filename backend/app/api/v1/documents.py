@@ -40,7 +40,7 @@ from app.services.document_service import (
     reject_documents,
 )
 from app.services.notification_service import create_notification
-from app.services.storage_service import generate_object_key, get_presigned_download_url, get_presigned_upload_url
+from app.services.storage_service import generate_object_key, get_presigned_download_url, get_presigned_upload_url, validate_object_key_prefix
 
 router = APIRouter()
 
@@ -326,6 +326,19 @@ async def confirm_document_upload(
 
     filing_check = await db.execute(select(ITRFiling).where(ITRFiling.id == doc_placeholder.filing_id))
     filing_for_doc = filing_check.scalar_one_or_none()
+
+    # Validate object_key belongs to this client's documents_required folder
+    if filing_for_doc:
+        client_user_result = await db.execute(select(User).where(User.id == filing_for_doc.client_id))
+        client_user = client_user_result.scalar_one_or_none()
+        try:
+            validate_object_key_prefix(
+                object_key, str(filing_for_doc.client_id),
+                client_user.full_name if client_user else "",
+                f"ITR-{filing_for_doc.financial_year}/documents_required",
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     # Documents can only be uploaded in ON_BOARDING or PROCESSING states
     if filing_for_doc and filing_for_doc.status not in (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING):
