@@ -141,7 +141,7 @@ async def assign_documents_to_filing(
     """Assign document placeholders to a filing (Executive/Partner).
 
     Idempotent: can be called multiple times to update the checklist.
-    Works in INITIATED or ON_BOARDING state.
+    Works in INITIATED or DOCUMENT_UPLOAD state.
     """
     result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = result.scalar_one_or_none()
@@ -150,15 +150,15 @@ async def assign_documents_to_filing(
 
     await enforce_filing_access(db, current_user, filing.client_id)
 
-    # Allow assigning/re-assigning documents in INITIATED, ON_BOARDING, or PROCESSING
+    # Allow assigning/re-assigning documents in INITIATED, DOCUMENT_UPLOAD, or PROCESSING
     # (PROCESSING is needed after COMPUTATION → PROCESSING backward transition to add new docs)
-    if filing.status not in (FilingStatus.INITIATED, FilingStatus.ON_BOARDING, FilingStatus.PROCESSING):
+    if filing.status not in (FilingStatus.INITIATED, FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot assign documents when filing is in {filing.status.value} state",
         )
 
-    # Check executive is assigned before moving to ON_BOARDING
+    # Check executive is assigned before moving to DOCUMENT_UPLOAD
     if filing.status == FilingStatus.INITIATED:
         if not filing.assigned_executive_id:
             raise HTTPException(
@@ -174,13 +174,13 @@ async def assign_documents_to_filing(
         assigned_by=current_user.id,
     )
 
-    # Transition to ON_BOARDING if currently INITIATED
+    # Transition to DOCUMENT_UPLOAD if currently INITIATED
     if filing.status == FilingStatus.INITIATED:
         from app.services.filing_service import transition_filing_status
         await transition_filing_status(
             db=db,
             filing=filing,
-            to_status=FilingStatus.ON_BOARDING,
+            to_status=FilingStatus.DOCUMENT_UPLOAD,
             changed_by=current_user.id,
             remarks="Document placeholders assigned",
         )
@@ -348,12 +348,12 @@ async def confirm_document_upload(
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    # Documents can only be uploaded in ON_BOARDING or PROCESSING states
-    if filing_for_doc and filing_for_doc.status not in (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING):
+    # Documents can only be uploaded in DOCUMENT_UPLOAD or PROCESSING states
+    if filing_for_doc and filing_for_doc.status not in (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot upload documents: Filing is in '{filing_for_doc.status.value}' state. "
-                   f"Documents can only be uploaded when the filing is in ON_BOARDING or PROCESSING state.",
+                   f"Documents can only be uploaded when the filing is in DOCUMENT_UPLOAD or PROCESSING state.",
         )
 
     # Only PENDING_UPLOAD or REJECTED docs can be uploaded to
@@ -478,11 +478,11 @@ async def approve_filing_documents(
         # All documents approved — auto-transition to COMPUTATION
         filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
         filing = filing_result.scalar_one_or_none()
-        if filing and filing.status in (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING):
+        if filing and filing.status in (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING):
             from app.services.filing_service import transition_filing_status
 
-            # If still in ON_BOARDING, step through PROCESSING first
-            if filing.status == FilingStatus.ON_BOARDING:
+            # If still in DOCUMENT_UPLOAD, step through PROCESSING first
+            if filing.status == FilingStatus.DOCUMENT_UPLOAD:
                 filing = await transition_filing_status(
                     db=db,
                     filing=filing,

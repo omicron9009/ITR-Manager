@@ -126,6 +126,9 @@ async def _create_tables():
 
         # Ensure new columns exist on existing tables
         await _sync_new_columns()
+
+        # Migrate renamed enum values in existing data
+        await _migrate_renamed_enum_values()
     except Exception as e:
         logger.warning(f"Table creation skipped: {e}")
 
@@ -264,6 +267,57 @@ async def _sync_new_columns():
         logger.info("Column sync complete.")
     except Exception as e:
         logger.warning(f"Column sync failed: {e}")
+
+
+async def _migrate_renamed_enum_values():
+    """Migrate renamed enum values in existing database rows.
+
+    This handles renaming ON_BOARDING → DOCUMENT_UPLOAD in all relevant tables.
+    Idempotent: safe to run on every startup.
+    """
+    import asyncpg
+
+    rename_map = [
+        # (table, column, old_value, new_value)
+        ("itr_filings", "status", "ON_BOARDING", "DOCUMENT_UPLOAD"),
+        ("filing_state_history", "from_status", "ON_BOARDING", "DOCUMENT_UPLOAD"),
+        ("filing_state_history", "to_status", "ON_BOARDING", "DOCUMENT_UPLOAD"),
+    ]
+
+    try:
+        conn = await asyncpg.connect(
+            host=settings.POSTGRES_HOST,
+            port=settings.POSTGRES_PORT,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            database=settings.POSTGRES_DB,
+        )
+
+        try:
+            for table, column, old_val, new_val in rename_map:
+                # Check if new enum value exists (it should after _sync_pg_enums)
+                result = await conn.fetchval(
+                    "SELECT 1 FROM pg_enum WHERE enumlabel = $1 AND enumtypid = "
+                    "(SELECT atttypid FROM pg_attribute "
+                    " JOIN pg_class ON pg_class.oid = pg_attribute.attrelid "
+                    " WHERE pg_class.relname = $2 AND pg_attribute.attname = $3)",
+                    new_val, table, column,
+                )
+                if not result:
+                    continue  # New enum value not yet available, skip
+
+                count = await conn.fetchval(
+                    f'UPDATE "{table}" SET "{column}" = $1 WHERE "{column}" = $2',
+                    new_val, old_val,
+                )
+                if count and int(count.split()[-1]) > 0:
+                    logger.info(f"Migrated {count} rows in {table}.{column}: {old_val} → {new_val}")
+        finally:
+            await conn.close()
+
+        logger.info("Enum value migration complete.")
+    except Exception as e:
+        logger.warning(f"Enum value migration failed: {e}")
 
 
 async def _seed_admin_user():

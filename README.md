@@ -56,7 +56,7 @@ docker run -d --name itr-platform -p 8000:8000 -p 9001:9001 --env-file .env -v i
 ### windows Powershell command 
 ```bash
 docker run -it `
-  --name itr-test `
+  --name itr-test-api `
   -p 8000:8000 `
   -p 9001:9001 `
   -p 5432:5432 `

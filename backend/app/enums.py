@@ -18,7 +18,7 @@ class AccountStatus(str, enum.Enum):
 
 class FilingStatus(str, enum.Enum):
     INITIATED = "INITIATED"
-    ON_BOARDING = "ON_BOARDING"
+    DOCUMENT_UPLOAD = "DOCUMENT_UPLOAD"
     PROCESSING = "PROCESSING"
     COMPUTATION = "COMPUTATION"
     FILING = "FILING"
@@ -97,15 +97,15 @@ class NotificationChannel(str, enum.Enum):
 
 # Valid state transitions for the filing state machine
 VALID_FILING_TRANSITIONS: dict[FilingStatus, list[FilingStatus]] = {
-    FilingStatus.INITIATED: [FilingStatus.ON_BOARDING, FilingStatus.HALTED],
-    FilingStatus.ON_BOARDING: [FilingStatus.PROCESSING, FilingStatus.HALTED],
-    FilingStatus.PROCESSING: [FilingStatus.ON_BOARDING, FilingStatus.COMPUTATION, FilingStatus.HALTED],
+    FilingStatus.INITIATED: [FilingStatus.DOCUMENT_UPLOAD, FilingStatus.HALTED],
+    FilingStatus.DOCUMENT_UPLOAD: [FilingStatus.PROCESSING, FilingStatus.HALTED],
+    FilingStatus.PROCESSING: [FilingStatus.DOCUMENT_UPLOAD, FilingStatus.COMPUTATION, FilingStatus.HALTED],
     FilingStatus.COMPUTATION: [FilingStatus.PROCESSING, FilingStatus.FILING, FilingStatus.HALTED],
     FilingStatus.FILING: [FilingStatus.PAYMENT, FilingStatus.HALTED],
     FilingStatus.PAYMENT: [FilingStatus.COMPLETED, FilingStatus.HALTED],
     FilingStatus.HALTED: [
         FilingStatus.INITIATED,
-        FilingStatus.ON_BOARDING,
+        FilingStatus.DOCUMENT_UPLOAD,
         FilingStatus.PROCESSING,
         FilingStatus.COMPUTATION,
         FilingStatus.FILING,

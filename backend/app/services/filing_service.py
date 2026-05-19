@@ -22,7 +22,7 @@ def calculate_progress_percentage(status: FilingStatus) -> int:
     """Calculate progress percentage based on filing status."""
     progress_map = {
         FilingStatus.INITIATED: 10,
-        FilingStatus.ON_BOARDING: 25,
+        FilingStatus.DOCUMENT_UPLOAD: 25,
         FilingStatus.PROCESSING: 40,
         FilingStatus.COMPUTATION: 60,
         FilingStatus.FILING: 75,
@@ -67,8 +67,8 @@ async def transition_filing_status(
     if to_status not in valid_targets:
         raise InvalidStateTransitionError(from_status.value, to_status.value)
 
-    # Special validation: ON_BOARDING requires an assigned executive
-    if to_status == FilingStatus.ON_BOARDING and not filing.assigned_executive_id:
+    # Special validation: DOCUMENT_UPLOAD requires an assigned executive
+    if to_status == FilingStatus.DOCUMENT_UPLOAD and not filing.assigned_executive_id:
         raise ExecutiveNotAssignedError()
 
     # Update filing status
@@ -77,7 +77,7 @@ async def transition_filing_status(
 
     # Set milestone timestamps
     now = datetime.utcnow()
-    if to_status == FilingStatus.ON_BOARDING:
+    if to_status == FilingStatus.DOCUMENT_UPLOAD:
         filing.onboarding_completed_at = now
     elif to_status == FilingStatus.PROCESSING and from_status == FilingStatus.COMPUTATION:
         filing.documents_approved_at = None  # Reset since we're going back for more docs

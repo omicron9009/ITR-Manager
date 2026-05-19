@@ -118,14 +118,14 @@ async def approve_documents(
         if not doc:
             continue
 
-        # Verify filing is in ON_BOARDING or PROCESSING state
+        # Verify filing is in DOCUMENT_UPLOAD or PROCESSING state
         filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
         filing = filing_result.scalar_one_or_none()
-        if filing and filing.status not in (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING):
+        if filing and filing.status not in (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING):
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
                 detail=f"Cannot approve documents: Filing is in '{filing.status.value}' state. "
-                       f"Documents can only be approved when the filing is in ON_BOARDING or PROCESSING state.",
+                       f"Documents can only be approved when the filing is in DOCUMENT_UPLOAD or PROCESSING state.",
             )
 
         # Only UPLOADED docs can be approved
@@ -172,14 +172,14 @@ async def reject_documents(
         if not doc:
             continue
 
-        # Verify filing is in ON_BOARDING or PROCESSING state
+        # Verify filing is in DOCUMENT_UPLOAD or PROCESSING state
         filing_check = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
         filing_obj = filing_check.scalar_one_or_none()
-        if filing_obj and filing_obj.status not in (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING):
+        if filing_obj and filing_obj.status not in (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING):
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
                 detail=f"Cannot reject documents: Filing is in '{filing_obj.status.value}' state. "
-                       f"Documents can only be rejected when the filing is in ON_BOARDING or PROCESSING state.",
+                       f"Documents can only be rejected when the filing is in DOCUMENT_UPLOAD or PROCESSING state.",
             )
 
         # Only UPLOADED docs can be rejected

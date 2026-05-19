@@ -24,9 +24,9 @@ class DuplicateFilingError(HTTPException):
 class InvalidStateTransitionError(HTTPException):
     def __init__(self, from_status: str, to_status: str):
         valid_map = {
-            "INITIATED": "ON_BOARDING (assign document placeholders)",
-            "ON_BOARDING": "PROCESSING (client submits documents)",
-            "PROCESSING": "COMPUTATION (all documents approved) or ON_BOARDING",
+            "INITIATED": "DOCUMENT_UPLOAD (assign document placeholders)",
+            "DOCUMENT_UPLOAD": "PROCESSING (client submits documents)",
+            "PROCESSING": "COMPUTATION (all documents approved) or DOCUMENT_UPLOAD",
             "COMPUTATION": "FILING (client approves computation) or PROCESSING (request more docs)",
             "FILING": "PAYMENT (Executive marks filed + uploads docs)",
             "PAYMENT": "COMPLETED (payment received)",
@@ -58,7 +58,7 @@ class ExecutiveNotAssignedError(HTTPException):
     def __init__(self):
         super().__init__(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Cannot transition to ON_BOARDING: No Executive is assigned to this client. "
+            detail="Cannot transition to DOCUMENT_UPLOAD: No Executive is assigned to this client. "
                    "The Partner must assign an Executive before document placeholders can be set.",
         )
 

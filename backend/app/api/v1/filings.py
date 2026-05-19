@@ -310,22 +310,22 @@ async def transition_filing(
     # This generic endpoint allows:
     #   - any state → HALTED (halt)
     #   - HALTED → any valid state (resume)
-    #   - INITIATED → ON_BOARDING (assign documents handles this, but allow here for idempotency)
+    #   - INITIATED → DOCUMENT_UPLOAD (assign documents handles this, but allow here for idempotency)
     #   - COMPUTATION → PROCESSING (request more docs)
     # Blocked (must use dedicated endpoint):
-    #   - ON_BOARDING → PROCESSING (auto: happens when all documents approved)
+    #   - DOCUMENT_UPLOAD → PROCESSING (auto: happens when all documents approved)
     #   - PROCESSING → COMPUTATION (auto: happens when all documents approved)
     #   - COMPUTATION → FILING (use: client approves computation)
-    #   - FILING → PAYMENT (auto: when all 3 completed docs uploaded)
+    #   - FILING → PAYMENT (auto: when all required completed docs uploaded)
     #   - PAYMENT → COMPLETED (use: mark payment received)
     is_halt = body.to_status == FilingStatus.HALTED
     is_resume = filing.status == FilingStatus.HALTED
     is_already_in_target = filing.status == body.to_status
     # Generic transition only allows transitions that DON'T have dedicated endpoints.
-    # FILING→PAYMENT uses confirm_completed_doc_upload (3-doc gate).
-    # PAYMENT→COMPLETED uses mark_payment_received (3-doc + payment check).
+    # FILING→PAYMENT uses confirm_completed_doc_upload (required-doc gate).
+    # PAYMENT→COMPLETED uses mark_payment_received (required-doc + payment check).
     allowed_forward = {
-        (FilingStatus.INITIATED, FilingStatus.ON_BOARDING),
+        (FilingStatus.INITIATED, FilingStatus.DOCUMENT_UPLOAD),
         (FilingStatus.COMPUTATION, FilingStatus.PROCESSING),  # Allow requesting more docs
     }
     is_allowed_forward = (filing.status, body.to_status) in allowed_forward
@@ -359,7 +359,7 @@ async def transition_filing(
     if not (is_halt or is_resume or is_allowed_forward):
         # Build a helpful message based on what the user tried to do
         transition_hints = {
-            (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING): "Use 'Approve Documents' — all documents must be approved by Executive/Partner first. Filing stays in ON_BOARDING until then.",
+            (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING): "Use 'Approve Documents' — all documents must be approved by Executive/Partner first. Filing stays in DOCUMENT_UPLOAD until then.",
             (FilingStatus.PROCESSING, FilingStatus.COMPUTATION): "Use 'Approve Documents' — all documents must be approved by Executive/Partner.",
             (FilingStatus.COMPUTATION, FilingStatus.FILING): "Use 'Approve Computation' — the client must approve the computation.",
             (FilingStatus.FILING, FilingStatus.PAYMENT): "Upload all required documents (Acknowledgement, Invoice, ITR JSON, ITR Form) via the completed docs upload.",
@@ -465,11 +465,11 @@ async def submit_documents(
     if filing.client_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
 
-    # BRD: Client submits from ON_BOARDING (first time) or ON_BOARDING again (after rejection loop)
-    if filing.status not in {FilingStatus.ON_BOARDING, FilingStatus.PROCESSING}:
+    # BRD: Client submits from DOCUMENT_UPLOAD (first time) or DOCUMENT_UPLOAD again (after rejection loop)
+    if filing.status not in {FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Documents can only be submitted while the filing is in ON_BOARDING or PROCESSING, not {filing.status.value}. "
+            detail=f"Documents can only be submitted while the filing is in DOCUMENT_UPLOAD or PROCESSING, not {filing.status.value}. "
                    f"Please wait for the appropriate stage before submitting documents.",
         )
 
@@ -512,7 +512,7 @@ async def submit_documents(
     from datetime import datetime
     filing.documents_submitted_at = datetime.utcnow()
 
-    # Filing stays in ON_BOARDING — it only moves to PROCESSING once
+    # Filing stays in DOCUMENT_UPLOAD — it only moves to PROCESSING once
     # the Executive/Partner has approved ALL documents.
 
     # Notify partner + executive on every submission (initial or re-submission after rejection)
