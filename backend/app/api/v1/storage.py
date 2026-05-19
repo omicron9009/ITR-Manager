@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.file_validation import validate_file_size, validate_file_type
 from app.core.permissions import enforce_client_access
 from app.core.security import get_current_active_client, get_current_user
 from app.database import get_db
@@ -57,6 +58,10 @@ async def get_onboarding_upload_url(
         field_label=field.field_label,
         filename=filename,
     )
+
+    # Validate file type
+    validate_file_type(filename, content_type)
+
     upload_url = get_presigned_upload_url(object_key, content_type)
 
     return {
@@ -78,6 +83,10 @@ async def confirm_onboarding_upload(
     db: AsyncSession = Depends(get_db),
 ):
     """Confirm an onboarding file upload and return a stored_file ID to use in form_data."""
+    # Validate file type and size
+    validate_file_type(filename, content_type)
+    validate_file_size(file_size)
+
     from app.config import settings
 
     try:
@@ -103,6 +112,83 @@ async def confirm_onboarding_upload(
     }
 
 
+# ─── GET /storage/onboarding-files ───────────────────────────
+@router.get("/onboarding-files", response_model=list[dict])
+async def get_onboarding_files(
+    client_id: UUID = Query(None, description="Client ID (for Partner/Executive). Omit for self."),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all files uploaded during onboarding for a client.
+
+    - Client: gets their own onboarding files.
+    - Executive/Partner: can pass client_id to fetch a specific client's files.
+    """
+    from app.models.client_profile import ClientProfile
+
+    # Determine target client
+    if current_user.role == UserRole.CLIENT:
+        target_client_id = current_user.id
+    else:
+        if not client_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="client_id is required for Partner/Executive",
+            )
+        target_client_id = client_id
+
+    await enforce_client_access(db, current_user, target_client_id)
+
+    # Fetch client profile to get form_data
+    profile_result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == target_client_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if not profile or not profile.form_data:
+        return []
+
+    # Get all active FILE-type fields
+    fields_result = await db.execute(
+        select(OnboardingFormField).where(
+            OnboardingFormField.field_type == FormFieldType.FILE,
+        )
+    )
+    file_fields = fields_result.scalars().all()
+    file_field_keys = {f.field_key: f.field_label for f in file_fields}
+
+    # Resolve file IDs from form_data
+    items = []
+    for field_key, field_label in file_field_keys.items():
+        value = profile.form_data.get(field_key)
+        if not value or not isinstance(value, str):
+            continue
+        try:
+            file_uuid = UUID(value)
+        except (ValueError, AttributeError):
+            continue
+
+        file_result = await db.execute(
+            select(StoredFile).where(StoredFile.id == file_uuid)
+        )
+        stored_file = file_result.scalar_one_or_none()
+        if stored_file:
+            download_url = get_presigned_download_url(
+                stored_file.object_key, filename=stored_file.original_filename,
+            )
+            items.append({
+                "file_id": str(stored_file.id),
+                "field_key": field_key,
+                "field_label": field_label,
+                "filename": stored_file.original_filename,
+                "content_type": stored_file.content_type,
+                "file_size_bytes": stored_file.file_size_bytes,
+                "uploaded_at": stored_file.uploaded_at.isoformat() if stored_file.uploaded_at else None,
+                "download_url": download_url,
+            })
+
+    return items
+
+
 # ─── POST /storage/completed-doc/upload-url ──────────────────
 @router.post("/completed-doc/upload-url", response_model=dict)
 async def get_completed_doc_upload_url(
@@ -116,6 +202,10 @@ async def get_completed_doc_upload_url(
     """Get upload URL for ITR Acknowledgement or Invoice (Executive/Partner)."""
     if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+    # Validate file type (skip for ITR_JSON which has its own validation)
+    if doc_type != CompletedDocType.ITR_JSON:
+        validate_file_type(filename, content_type)
 
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = filing_result.scalar_one_or_none()
@@ -164,6 +254,13 @@ async def confirm_completed_doc_upload(
 
     if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+    # Validate file type and size (skip for ITR_JSON which has its own validation)
+    if doc_type != CompletedDocType.ITR_JSON:
+        validate_file_type(filename, content_type)
+        validate_file_size(file_size)
+    else:
+        validate_file_size(file_size)
 
     from app.config import settings
     from app.services.filing_service import transition_filing_status
@@ -222,6 +319,22 @@ async def confirm_completed_doc_upload(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="ITR JSON file must have content type 'application/json'.",
+            )
+
+    # Validate ITR_FORM (required)
+    if doc_type == CompletedDocType.ITR_FORM:
+        if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot upload ITR Form in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
+            )
+
+    # Validate FINANCIAL_STATEMENT (optional)
+    if doc_type == CompletedDocType.FINANCIAL_STATEMENT:
+        if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot upload Financial Statement in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
             )
 
     # Reuse existing StoredFile if same bucket/object_key (idempotent retry)
@@ -304,10 +417,21 @@ async def confirm_completed_doc_upload(
             filing_id=filing_id,
             details={"doc_type": "ITR_JSON", "filename": filename},
         )
+    elif doc_type in (CompletedDocType.ITR_FORM, CompletedDocType.FINANCIAL_STATEMENT):
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.DOCUMENT_UPLOADED,
+            actor_id=current_user.id,
+            client_id=filing.client_id,
+            filing_id=filing_id,
+            details={"doc_type": doc_type.value, "filename": filename},
+        )
 
-    # Check if all 3 required completed docs are uploaded — only then transition to PAYMENT
+    # Check if all required completed docs are uploaded — only then transition to PAYMENT
+    # Required: ITR_ACKNOWLEDGEMENT, INVOICE, ITR_JSON, ITR_FORM
+    # Optional: FINANCIAL_STATEMENT (not required for transition)
     if filing.status == FilingStatus.FILING:
-        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON}
+        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM}
         existing_docs_result = await db.execute(
             select(FilingCompletedDoc.doc_type).where(FilingCompletedDoc.filing_id == filing_id)
         )
@@ -315,13 +439,13 @@ async def confirm_completed_doc_upload(
         missing_types = required_doc_types - existing_types
 
         if not missing_types:
-            # All 3 docs uploaded → transition to PAYMENT
+            # All required docs uploaded → transition to PAYMENT
             await transition_filing_status(
                 db=db,
                 filing=filing,
                 to_status=FilingStatus.PAYMENT,
                 changed_by=current_user.id,
-                remarks="ITR filed - all required documents uploaded (Acknowledgement, Invoice, ITR JSON)",
+                remarks="ITR filed - all required documents uploaded (Acknowledgement, Invoice, ITR JSON, ITR Form)",
             )
 
             await create_notification(
@@ -366,11 +490,16 @@ async def get_completed_docs(
     # Exception: Invoice is visible as soon as it's uploaded (any state)
     if current_user.role == UserRole.CLIENT:
         if filing.status == FilingStatus.COMPLETED:
-            # Show Acknowledgement and Invoice once completed
+            # Show all completed docs once filing is completed
             result = await db.execute(
                 select(FilingCompletedDoc).where(
                     FilingCompletedDoc.filing_id == filing_id,
-                    FilingCompletedDoc.doc_type.in_([CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE]),
+                    FilingCompletedDoc.doc_type.in_([
+                        CompletedDocType.ITR_ACKNOWLEDGEMENT,
+                        CompletedDocType.INVOICE,
+                        CompletedDocType.ITR_FORM,
+                        CompletedDocType.FINANCIAL_STATEMENT,
+                    ]),
                 )
             )
         else:

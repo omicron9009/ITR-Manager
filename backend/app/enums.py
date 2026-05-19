@@ -45,6 +45,8 @@ class CompletedDocType(str, enum.Enum):
     ITR_ACKNOWLEDGEMENT = "ITR_ACKNOWLEDGEMENT"
     INVOICE = "INVOICE"
     ITR_JSON = "ITR_JSON"
+    ITR_FORM = "ITR_FORM"
+    FINANCIAL_STATEMENT = "FINANCIAL_STATEMENT"
 
 
 class FormFieldType(str, enum.Enum):

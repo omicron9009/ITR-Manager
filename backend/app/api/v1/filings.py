@@ -362,7 +362,7 @@ async def transition_filing(
             (FilingStatus.ON_BOARDING, FilingStatus.PROCESSING): "Use 'Approve Documents' — all documents must be approved by Executive/Partner first. Filing stays in ON_BOARDING until then.",
             (FilingStatus.PROCESSING, FilingStatus.COMPUTATION): "Use 'Approve Documents' — all documents must be approved by Executive/Partner.",
             (FilingStatus.COMPUTATION, FilingStatus.FILING): "Use 'Approve Computation' — the client must approve the computation.",
-            (FilingStatus.FILING, FilingStatus.PAYMENT): "Upload all 3 required documents (Acknowledgement, Invoice, ITR JSON) via the completed docs upload.",
+            (FilingStatus.FILING, FilingStatus.PAYMENT): "Upload all required documents (Acknowledgement, Invoice, ITR JSON, ITR Form) via the completed docs upload.",
             (FilingStatus.PAYMENT, FilingStatus.COMPLETED): "Use 'Mark Payment Received' to complete the filing.",
         }
         hint = transition_hints.get((filing.status, body.to_status), "")
@@ -567,11 +567,11 @@ async def mark_payment_received(
                    f"The filing must be in PAYMENT state before payment can be marked as received.",
         )
 
-    # Verify all 3 required completed docs exist before allowing COMPLETED
+    # Verify all required completed docs exist before allowing COMPLETED
     from app.enums import CompletedDocType
     from app.models.filing_completed_doc import FilingCompletedDoc
 
-    required_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON}
+    required_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM}
     existing_result = await db.execute(
         select(FilingCompletedDoc.doc_type).where(FilingCompletedDoc.filing_id == filing_id)
     )

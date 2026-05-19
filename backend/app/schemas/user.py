@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 # ─── User Base ──────────────────────────────────────────────
@@ -52,6 +52,15 @@ class ClientRegistrationRequest(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
     phone_number: Optional[str] = Field(None, max_length=20)
+
+    @field_validator("phone_number")
+    @classmethod
+    def validate_phone_number(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            digits = v.strip()
+            if not digits.isdigit() or len(digits) != 10:
+                raise ValueError("Phone number must be exactly 10 digits")
+        return v
 
 
 class ClientRegistrationResponse(BaseModel):
