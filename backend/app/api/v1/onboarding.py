@@ -24,8 +24,49 @@ from app.schemas.onboarding import (
     OnboardingFormSubmitRequest,
 )
 from app.services.audit_service import record_audit_event
+from app.services.storage_service import get_presigned_download_url
 
 router = APIRouter()
+
+
+async def _resolve_file_fields(
+    db: AsyncSession,
+    fields: list,
+    form_data: dict,
+) -> dict:
+    """For FILE-type fields, replace the stored UUID with {file_id, filename, download_url}."""
+    if not form_data:
+        return form_data
+
+    resolved = dict(form_data)
+    file_field_keys = {f.field_key for f in fields if f.field_type == FormFieldType.FILE}
+
+    for key in file_field_keys:
+        value = resolved.get(key)
+        if not value or not isinstance(value, str):
+            continue
+        try:
+            file_uuid = UUID(value)
+        except (ValueError, AttributeError):
+            continue
+
+        file_result = await db.execute(
+            select(StoredFile).where(StoredFile.id == file_uuid)
+        )
+        stored_file = file_result.scalar_one_or_none()
+        if stored_file:
+            download_url = get_presigned_download_url(
+                stored_file.object_key, filename=stored_file.original_filename,
+            )
+            resolved[key] = {
+                "file_id": str(stored_file.id),
+                "filename": stored_file.original_filename,
+                "content_type": stored_file.content_type,
+                "file_size_bytes": stored_file.file_size_bytes,
+                "download_url": download_url,
+            }
+
+    return resolved
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -231,6 +272,10 @@ async def get_onboarding_form(
             submitted_data = profile.form_data
             submitted_at = profile.form_submitted_at
 
+    # Resolve FILE fields to download URLs
+    if submitted_data:
+        submitted_data = await _resolve_file_fields(db, fields, submitted_data)
+
     return OnboardingFormResponse(
         fields=[FormFieldResponse.model_validate(f) for f in fields],
         submitted=submitted,
@@ -281,6 +326,10 @@ async def get_client_onboarding_form(
         submitted = True
         submitted_data = profile.form_data
         submitted_at = profile.form_submitted_at
+
+    # Resolve FILE fields to download URLs
+    if submitted_data:
+        submitted_data = await _resolve_file_fields(db, fields, submitted_data)
 
     return OnboardingFormResponse(
         fields=[FormFieldResponse.model_validate(f) for f in fields],
