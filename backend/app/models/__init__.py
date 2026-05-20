@@ -13,3 +13,5 @@ from app.models.filing_completed_doc import FilingCompletedDoc  # noqa: F401
 from app.models.filing_state_history import FilingStateHistory  # noqa: F401
 from app.models.notification import Notification  # noqa: F401
 from app.models.audit_log import AuditLog  # noqa: F401
+from app.models.tag import Tag  # noqa: F401
+from app.models.executive_tag import ExecutiveTag  # noqa: F401

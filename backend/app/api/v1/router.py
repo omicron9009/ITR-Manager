@@ -15,6 +15,7 @@ from app.api.v1 import (
     onboarding,
     audit,
     storage,
+    tags,
 )
 
 api_router = APIRouter()
@@ -31,3 +32,4 @@ api_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboar
 api_router.include_router(audit.router, prefix="/audit", tags=["Audit"])
 api_router.include_router(storage.router, prefix="/storage", tags=["Storage"])
 api_router.include_router(email.router, prefix="/email", tags=["Email Configuration"])
+api_router.include_router(tags.router, prefix="/tags", tags=["Tags"])

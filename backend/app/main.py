@@ -149,6 +149,7 @@ async def _sync_pg_enums():
     from app.enums import (
         AccountStatus, FilingStatus, DocumentStatus, ComputationStatus,
         CompletedDocType, FormFieldType, AuditEventType, NotificationChannel, UserRole,
+        TagType,
     )
     enum_map = {
         "user_role": UserRole,
@@ -160,6 +161,7 @@ async def _sync_pg_enums():
         "form_field_type": FormFieldType,
         "audit_event_type": AuditEventType,
         "notification_channel": NotificationChannel,
+        "tag_type": TagType,
     }
 
     try:

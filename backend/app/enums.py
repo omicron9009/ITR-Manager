@@ -95,6 +95,11 @@ class NotificationChannel(str, enum.Enum):
     BOTH = "BOTH"
 
 
+class TagType(str, enum.Enum):
+    MANAGER = "MANAGER"
+    LOCATION = "LOCATION"
+
+
 # Valid state transitions for the filing state machine
 VALID_FILING_TRANSITIONS: dict[FilingStatus, list[FilingStatus]] = {
     FilingStatus.INITIATED: [FilingStatus.DOCUMENT_UPLOAD, FilingStatus.HALTED],
