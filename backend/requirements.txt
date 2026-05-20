@@ -32,3 +32,6 @@ uuid6==2024.1.12
 # Development
 pytest==8.2.2
 pytest-asyncio==0.23.7
+
+# Reports
+openpyxl==3.1.5

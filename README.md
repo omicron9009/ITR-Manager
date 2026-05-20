@@ -85,6 +85,8 @@ docker run -it `
   -e JWT_ACCESS_TOKEN_EXPIRE_MINUTES=60 `
   -e ADMIN_EMAIL="admin@itr-platform.com" `
   -e ADMIN_PASSWORD="admin123" `
+  -e DASHBOARD_USER_EMAIL="viewer@itr-platform.com" `
+  -e DASHBOARD_USER_PASSWORD="viewer123" `
   omicron9009/itr-platform
 ```
 

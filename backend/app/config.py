@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "admin123"
     ADMIN_FULL_NAME: str = "Platform Admin"
 
+    # Dashboard user seed (read-only analytics access)
+    DASHBOARD_USER_EMAIL: str = ""
+    DASHBOARD_USER_PASSWORD: str = ""
+    DASHBOARD_USER_FULL_NAME: str = "Dashboard Viewer"
+
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000"]
 

@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
     await _ensure_database_exists()
     await _create_tables()
     await _seed_admin_user()
+    await _seed_dashboard_user()
 
     try:
         from app.services.storage_service import ensure_bucket_exists
@@ -356,3 +357,42 @@ async def _seed_admin_user():
             logger.info(f"Admin user created: {settings.ADMIN_EMAIL}")
     except Exception as e:
         logger.warning(f"Admin seed skipped: {e}")
+
+
+async def _seed_dashboard_user():
+    """Create the DASHBOARD_USER on first startup if configured via env vars."""
+    from sqlalchemy import select, text
+
+    from app.core.security import hash_password
+    from app.database import AsyncSessionLocal
+    from app.enums import AccountStatus, UserRole
+    from app.models.user import User
+
+    if not settings.DASHBOARD_USER_EMAIL:
+        logger.info("DASHBOARD_USER_EMAIL not set — skipping dashboard user seed.")
+        return
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("SELECT pg_advisory_xact_lock(3)"))
+
+            result = await db.execute(
+                select(User).where(User.email == settings.DASHBOARD_USER_EMAIL).limit(1)
+            )
+            if result.scalar_one_or_none() is not None:
+                logger.info("Dashboard user already exists — skipping seed.")
+                return
+
+            dashboard_user = User(
+                email=settings.DASHBOARD_USER_EMAIL,
+                password_hash=hash_password(settings.DASHBOARD_USER_PASSWORD),
+                full_name=settings.DASHBOARD_USER_FULL_NAME,
+                role=UserRole.DASHBOARD_USER,
+                account_status=AccountStatus.ACTIVE,
+                is_active=True,
+            )
+            db.add(dashboard_user)
+            await db.commit()
+            logger.info(f"Dashboard user created: {settings.DASHBOARD_USER_EMAIL}")
+    except Exception as e:
+        logger.warning(f"Dashboard user seed skipped: {e}")

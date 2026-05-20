@@ -7,6 +7,7 @@ class UserRole(str, enum.Enum):
     PARTNER = "PARTNER"
     EXECUTIVE = "EXECUTIVE"
     CLIENT = "CLIENT"
+    DASHBOARD_USER = "DASHBOARD_USER"
 
 
 class AccountStatus(str, enum.Enum):

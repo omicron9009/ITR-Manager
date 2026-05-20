@@ -125,3 +125,15 @@ async def get_current_executive_or_partner(
             detail="Executive or Partner access required",
         )
     return current_user
+
+
+async def get_current_dashboard_user_or_partner(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Ensure the current user is either DASHBOARD_USER or Partner."""
+    if current_user.role not in (UserRole.DASHBOARD_USER, UserRole.PARTNER):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Dashboard or Partner access required",
+        )
+    return current_user
