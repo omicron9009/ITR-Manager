@@ -1,5 +1,6 @@
 """Service — Notification creation and delivery."""
 
+import asyncio
 import logging
 from typing import Optional
 from uuid import UUID
@@ -13,6 +14,40 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
+# Keep references to fire-and-forget email tasks to prevent GC
+_email_tasks: set = set()
+
+
+async def _deliver_email_for_notification(
+    notification_id: UUID,
+    user_email: str,
+    title: str,
+    message: str,
+) -> None:
+    """Fire-and-forget: send email using an independent DB session."""
+    from datetime import datetime
+
+    from app.database import AsyncSessionLocal
+    from app.services.email_service import send_notification_email
+
+    try:
+        async with AsyncSessionLocal() as db:
+            sent = await send_notification_email(
+                to_email=user_email,
+                title=title,
+                message=message,
+                db=db,
+            )
+            if sent:
+                await db.execute(
+                    update(Notification)
+                    .where(Notification.id == notification_id)
+                    .values(email_sent=True, email_sent_at=datetime.utcnow())
+                )
+                await db.commit()
+    except Exception as e:
+        logger.warning(f"Background email delivery failed for notification {notification_id}: {e}")
+
 
 async def create_notification(
     db: AsyncSession,
@@ -23,7 +58,11 @@ async def create_notification(
     related_filing_id: Optional[UUID] = None,
     related_client_id: Optional[UUID] = None,
 ) -> Notification:
-    """Create an in-app notification and send email if configured."""
+    """Create an in-app notification and dispatch email in the background.
+
+    Email delivery runs as a fire-and-forget async task with its own DB
+    session, so it never delays the caller or blocks the event loop.
+    """
     from app.services.audit_service import _sanitize_ascii
 
     clean_title = _sanitize_ascii(title)
@@ -40,7 +79,7 @@ async def create_notification(
     db.add(notification)
     await db.flush()
 
-    # Send email if channel includes EMAIL
+    # Send email if channel includes EMAIL — fire-and-forget via background task
     if channel in (NotificationChannel.EMAIL, NotificationChannel.BOTH):
         try:
             # Look up user email
@@ -48,23 +87,20 @@ async def create_notification(
             user_email = user_result.scalar()
 
             if user_email:
-                from app.services.email_service import send_notification_email
-                from datetime import datetime
-
-                sent = await send_notification_email(
-                    to_email=user_email,
-                    title=clean_title,
-                    message=clean_message,
-                    db=db,
+                task = asyncio.create_task(
+                    _deliver_email_for_notification(
+                        notification_id=notification.id,
+                        user_email=user_email,
+                        title=clean_title,
+                        message=clean_message,
+                    )
                 )
-
-                if sent:
-                    notification.email_sent = True
-                    notification.email_sent_at = datetime.utcnow()
-                    await db.flush()
+                # Prevent task from being garbage-collected; auto-discard on completion
+                _email_tasks.add(task)
+                task.add_done_callback(_email_tasks.discard)
         except Exception as e:
             # Email failure must never block the notification creation
-            logger.warning(f"Email delivery failed for notification {notification.id}: {e}")
+            logger.warning(f"Email task dispatch failed for notification {notification.id}: {e}")
 
     return notification
 

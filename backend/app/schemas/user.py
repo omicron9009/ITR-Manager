@@ -44,6 +44,24 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    recovery_codes: Optional[list[str]] = None
+
+
+# ─── Password Reset / Change ────────────────────────────────
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+    recovery_code: str = Field(..., min_length=1, max_length=20)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class PasswordChangeRequest(BaseModel):
+    old_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class RecoveryCodesResponse(BaseModel):
+    codes: list[str]
+    message: str
 
 
 # ─── Client Registration ────────────────────────────────────

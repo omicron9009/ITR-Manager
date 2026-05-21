@@ -475,39 +475,18 @@ async def approve_filing_documents(
 
     result_msg = f"{len(approved)} document(s) approved"
     if all_approved:
-        # All documents approved — auto-transition to COMPUTATION
+        # Notify client that all documents are approved (state transition is manual)
         filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
         filing = filing_result.scalar_one_or_none()
         if filing and filing.status in (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING):
-            from app.services.filing_service import transition_filing_status
-
-            # If still in DOCUMENT_UPLOAD, step through PROCESSING first
-            if filing.status == FilingStatus.DOCUMENT_UPLOAD:
-                filing = await transition_filing_status(
-                    db=db,
-                    filing=filing,
-                    to_status=FilingStatus.PROCESSING,
-                    changed_by=current_user.id,
-                    remarks="All documents approved — auto-advancing",
-                )
-
-            # PROCESSING → COMPUTATION
-            await transition_filing_status(
-                db=db,
-                filing=filing,
-                to_status=FilingStatus.COMPUTATION,
-                changed_by=current_user.id,
-                remarks="All documents approved",
-            )
-            # Notify client
             await create_notification(
                 db=db,
                 user_id=filing.client_id,
                 title="Documents Approved",
-                message="All your documents have been approved. Computation will be prepared.",
+                message="All your documents have been approved. Your filing will advance once the executive proceeds.",
                 related_filing_id=filing_id,
             )
-            result_msg += ". All documents approved - filing moved to COMPUTATION."
+            result_msg += ". All documents approved — awaiting executive action to move to computation."
 
     return {"message": result_msg, "all_approved": all_approved}
 

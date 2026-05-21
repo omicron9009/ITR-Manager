@@ -1,5 +1,6 @@
 """Service — Email delivery via Google Gmail API (credentials from DB)."""
 
+import asyncio
 import base64
 import json
 import logging
@@ -50,18 +51,26 @@ async def _get_gmail_service(db: AsyncSession):
 
         creds = Credentials.from_authorized_user_info(token_data)
 
-        # Refresh if expired
+        # Refresh if expired (blocking I/O → run in thread pool)
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            await asyncio.to_thread(creds.refresh, Request())
             # Update token in DB
             config.token_json = creds.to_json()
             await db.flush()
 
-        service = build("gmail", "v1", credentials=creds)
+        # Build service (minor I/O → thread pool)
+        service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
         return service, config.sender_email
     except Exception as e:
         logger.error(f"Failed to build Gmail service: {e}")
         return None, None
+
+
+def _send_gmail_message(service, raw_message: str):
+    """Synchronous Gmail API send — to be called via asyncio.to_thread."""
+    return service.users().messages().send(
+        userId="me", body={"raw": raw_message}
+    ).execute()
 
 
 async def send_email(
@@ -74,7 +83,8 @@ async def send_email(
     """
     Send an email via Google Gmail API using DB-stored credentials.
     
-    The partner configures credentials via POST /api/v1/email/setup.
+    All blocking network I/O is offloaded to a thread pool so the
+    async event loop is never blocked.
     """
     if db is None:
         logger.warning(f"Email skipped (no db session): to={to_email}, subject={subject}")
@@ -97,16 +107,14 @@ async def send_email(
             message.attach(MIMEText(body_text, "plain"))
         message.attach(MIMEText(body_html, "html"))
 
-        # Send via Gmail API
+        # Send via Gmail API (blocking HTTP → thread pool)
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        service.users().messages().send(
-            userId="me", body={"raw": raw}
-        ).execute()
+        await asyncio.to_thread(_send_gmail_message, service, raw)
 
         logger.info(f"Email sent: to={to_email}, subject={subject}")
         return True
     except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {str(e)}")
+        logger.error(f"Failed to send email to {to_email}: {str(e)}", exc_info=True)
         return False
 
 

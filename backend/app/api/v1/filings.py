@@ -313,8 +313,8 @@ async def transition_filing(
     #   - INITIATED → DOCUMENT_UPLOAD (assign documents handles this, but allow here for idempotency)
     #   - COMPUTATION → PROCESSING (request more docs)
     # Blocked (must use dedicated endpoint):
-    #   - DOCUMENT_UPLOAD → PROCESSING (auto: happens when all documents approved)
-    #   - PROCESSING → COMPUTATION (auto: happens when all documents approved)
+    #   - DOCUMENT_UPLOAD → PROCESSING (manual: use /move-to-computation)
+    #   - PROCESSING → COMPUTATION (manual: use /move-to-computation)
     #   - COMPUTATION → FILING (use: client approves computation)
     #   - FILING → PAYMENT (auto: when all required completed docs uploaded)
     #   - PAYMENT → COMPLETED (use: mark payment received)
@@ -359,8 +359,8 @@ async def transition_filing(
     if not (is_halt or is_resume or is_allowed_forward):
         # Build a helpful message based on what the user tried to do
         transition_hints = {
-            (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING): "Use 'Approve Documents' — all documents must be approved by Executive/Partner first. Filing stays in DOCUMENT_UPLOAD until then.",
-            (FilingStatus.PROCESSING, FilingStatus.COMPUTATION): "Use 'Approve Documents' — all documents must be approved by Executive/Partner.",
+            (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING): "Use 'Move to Computation' endpoint — Executive/Partner must manually advance when all documents are approved.",
+            (FilingStatus.PROCESSING, FilingStatus.COMPUTATION): "Use 'Move to Computation' endpoint — Executive/Partner must manually advance when all documents are approved.",
             (FilingStatus.COMPUTATION, FilingStatus.FILING): "Use 'Approve Computation' — the client must approve the computation.",
             (FilingStatus.FILING, FilingStatus.PAYMENT): "Upload all required documents (Acknowledgement, Invoice, ITR JSON, ITR Form) via the completed docs upload.",
             (FilingStatus.PAYMENT, FilingStatus.COMPLETED): "Use 'Mark Payment Received' to complete the filing.",
@@ -603,6 +603,74 @@ async def mark_payment_received(
     )
 
     return {"message": "Payment received. Filing marked as completed.", "status": filing.status.value}
+
+
+# ─── POST /filings/{filing_id}/move-to-computation ───────────
+@router.post("/{filing_id}/move-to-computation", response_model=dict)
+async def move_to_computation(
+    filing_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_current_executive_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually advance filing from Document Upload phase to Computation (Executive/Partner action)."""
+    result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
+    filing = result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_filing_access(db, current_user, filing.client_id)
+
+    # Must be in DOCUMENT_UPLOAD or PROCESSING state
+    if filing.status not in (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot move to computation: Filing is in '{filing.status.value}' state. "
+                   f"The filing must be in DOCUMENT_UPLOAD or PROCESSING state.",
+        )
+
+    # Validate all documents are approved
+    from app.services.document_service import check_all_documents_approved
+
+    all_approved = await check_all_documents_approved(db, filing_id)
+    if not all_approved:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cannot move to computation: Not all documents are approved yet. "
+                   "Please approve all documents before advancing.",
+        )
+
+    # Transition DOCUMENT_UPLOAD → PROCESSING → COMPUTATION
+    if filing.status == FilingStatus.DOCUMENT_UPLOAD:
+        filing = await transition_filing_status(
+            db=db,
+            filing=filing,
+            to_status=FilingStatus.PROCESSING,
+            changed_by=current_user.id,
+            remarks="Executive advanced to processing",
+            ip_address=request.client.host if request.client else None,
+        )
+
+    # PROCESSING → COMPUTATION
+    filing = await transition_filing_status(
+        db=db,
+        filing=filing,
+        to_status=FilingStatus.COMPUTATION,
+        changed_by=current_user.id,
+        remarks="Executive moved filing to computation",
+        ip_address=request.client.host if request.client else None,
+    )
+
+    # Notify client
+    await create_notification(
+        db=db,
+        user_id=filing.client_id,
+        title="Filing Advanced to Computation",
+        message=f"Your ITR filing for {filing.financial_year} has moved to computation phase.",
+        related_filing_id=filing.id,
+    )
+
+    return {"message": "Filing moved to computation.", "status": filing.status.value}
 
 
 # ─── GET /filings/{filing_id}/history ────────────────────────

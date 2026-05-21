@@ -220,6 +220,8 @@ async def _sync_new_columns():
         ("filing_computations", "rejected_by", "UUID", None),
         ("filing_computations", "rejected_at", "TIMESTAMPTZ", None),
         ("filing_computations", "rejection_reason", "TEXT", None),
+        # Recovery codes flag on users table
+        ("users", "recovery_codes_issued", "BOOLEAN NOT NULL", "'false'"),
     ]
 
     try:
