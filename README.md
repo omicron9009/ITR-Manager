@@ -12,6 +12,12 @@ cd backend
 docker build -t itr-platform:latest .
 ```
 
+```bash
+docker build -t itr-platform:latest . &&  docker tag itr-platform:latest omicron9009/itr-platform:latest && docker push omicron9009/itr-platform:latest
+```
+```bash
+docker build -t itr-platform:latest .; docker tag itr-platform:latest omicron9009/itr-platform:latest; docker push omicron9009/itr-platform:latest
+```
 ### Tag & Push
 
 ```bash

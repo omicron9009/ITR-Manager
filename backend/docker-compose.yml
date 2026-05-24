@@ -73,7 +73,7 @@ services:
       - "80:80"       # Public Web HTTP Entrypoint
       - "8080:8080"   # Traefik Dashboard (Keep closed in cloud firewalls)
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - //./pipe/docker_engine://./pipe/docker_engine:ro 
     networks:
       - ingress_network
     deploy:
@@ -109,7 +109,7 @@ services:
     restart: unless-stopped
 
   frontend-app:
-    image: omicron9009/itr-platform-frontend:latest
+    image: omicron9009/itr-frontend:latest
     container_name: itr-frontend-ui
     labels:
       - "traefik.enable=true"
@@ -155,7 +155,9 @@ services:
       - "traefik.http.routers.grafana.entrypoints=web"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
     volumes:
-      - grafana_enterprise_data:/var/lib/grafana
+      - grafana_enterprise_data:/var/lib/grafana 
+    ports:
+      - "3050:3000"
     depends_on:
       - prometheus
     networks:
