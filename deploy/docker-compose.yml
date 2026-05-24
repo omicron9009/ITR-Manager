@@ -47,33 +47,38 @@ services:
       - ingress_network
       - internal_network
     healthcheck:
-      # Upgraded check: using standard internal minio admin probe 
-      # to ensure it behaves correctly across floating tag updates
-      test: ["CMD-SHELL", "minio server info || exit 1"]
+      # Use the built-in MinIO Client to ping the pre-configured 'local' alias
+      test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      # Give it 10 seconds of grace period to spin up disks before failing it
+      start_period: 10s 
     deploy:
       resources:
         limits:
           memory: 1gb
     restart: unless-stopped
-  
-  # ===== SRE Layer =====
   # ─── INGRESS, ROUTING & SSL LAYER ───────────────────────────
+  # ===== SRE Layer: Secure Daemon Gateway =====
   traefik:
-    image: traefik:v3.0
+    image: traefik:v2.11
     container_name: itr-traefik
     command:
-      - "--api.insecure=true" # Accessible on port 8080 for debugging
+      - "--api.insecure=true"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      # We are back on native Linux. Hit the raw socket.
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
       - "--entrypoints.web.address=:80"
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.addEntryPointsLabels=true"
     ports:
-      - "80:80"       # Public Web HTTP Entrypoint
-      - "8080:8080"   # Traefik Dashboard (Keep closed in cloud firewalls)
+      - "80:80"
+      - "8080:8080"
     volumes:
-      - //./pipe/docker_engine://./pipe/docker_engine:ro 
+      # Mount the socket natively. No Windows translation bugs here.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - ingress_network
     deploy:
@@ -81,13 +86,12 @@ services:
         limits:
           memory: 512mb
     restart: unless-stopped
-
   # ─── APPLICATION LAYER ──────────────────────────────────────
   backend-api:
     image: omicron9009/itr-backend:latest
     container_name: itr-backend-api
     env_file:
-      - .env1
+      - .env
     # Traefik auto-detects these routing labels dynamically
     labels:
       - "traefik.enable=true"
@@ -115,7 +119,7 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`app.localhost`)"
       - "traefik.http.routers.frontend.entrypoints=web"
-      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
     depends_on:
       - backend-api
     networks:

@@ -1,13 +1,11 @@
 global:
   scrape_interval: 15s
-  evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'backend-api'
-    metrics_path: '/metrics'
-    static_configs:
-      - targets: ['itr-backend-api:8000'] # Resolves instantly over internal_network DNS
-
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+
+  - job_name: 'traefik'
+    static_configs:
+      - targets: ['itr-traefik:8080']
