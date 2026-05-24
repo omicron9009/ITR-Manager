@@ -59,7 +59,7 @@ docker run -d `
 docker run -d --name itr-platform -p 8000:8000 -p 9001:9001 --env-file .env -v itr-pgdata:/var/lib/postgresql/data -v itr-minio:/data/minio omicron9009/itr-platform:latest
 ```
 
-### windows Powershell command 
+### windows Powershell command - office
 ```bash
 docker run -it `
   --name itr-test-api `
@@ -67,8 +67,8 @@ docker run -it `
   -p 9001:9001 `
   -p 5432:5432 `
   -p 9000:9000 `
-  -v "C:\itr-platform\postgres-data:/var/lib/postgresql/data" `
-  -v "C:\itr-platform\minio-data:/data/minio" `
+  -v "F:\itr-platform\postgres-data:/var/lib/postgresql/data" `
+  -v "F:\itr-platform\minio-data:/data/minio" `
   -e APP_NAME="ITR Filing Platform" `
   -e APP_VERSION="1.0.0" `
   -e DEBUG="true" `
@@ -85,7 +85,7 @@ docker run -it `
   -e MINIO_SECRET_KEY="minioadmin" `
   -e MINIO_BUCKET_NAME="itr-documents" `
   -e MINIO_USE_SSL="false" `
-  -e MINIO_PUBLIC_ENDPOINT="192.168.1.107:9000" `
+  -e MINIO_PUBLIC_ENDPOINT="192.167.201.15:9000" `
   -e JWT_SECRET_KEY="dev-secret-key-change-in-production" `
   -e JWT_ALGORITHM="HS256" `
   -e JWT_ACCESS_TOKEN_EXPIRE_MINUTES=60 `
