@@ -35,3 +35,7 @@ pytest-asyncio==0.23.7
 
 # Reports
 openpyxl==3.1.5
+
+#kuch to
+prometheus-fastapi-instrumentator>=7.0.0
+prometheus-client>=0.20.0

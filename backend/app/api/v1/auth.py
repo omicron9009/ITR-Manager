@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
     create_access_token,
+    get_current_partner,
     get_current_user,
     hash_password,
     verify_password,
@@ -13,6 +14,9 @@ from app.core.security import (
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import (
+    AdminGenerateRecoveryCodesRequest,
+    ChangeEmailRequest,
+    ChangeEmailResponse,
     LoginRequest,
     PasswordChangeRequest,
     PasswordResetRequest,
@@ -120,6 +124,38 @@ async def change_password(
     return {"message": "Password changed successfully."}
 
 
+@router.post("/change-email", response_model=ChangeEmailResponse)
+async def change_email(
+    body: ChangeEmailRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the authenticated user's email. Requires password confirmation."""
+    if not verify_password(body.password, current_user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Password is incorrect",
+        )
+
+    # Check if new email is already in use
+    existing = await db.execute(
+        select(User).where(User.email == body.new_email)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email is already in use by another account",
+        )
+
+    current_user.email = body.new_email
+    await db.commit()
+
+    return ChangeEmailResponse(
+        message="Email updated successfully.",
+        email=body.new_email,
+    )
+
+
 @router.post("/regenerate-recovery-codes", response_model=RecoveryCodesResponse)
 async def regenerate_recovery_codes(
     current_user: User = Depends(get_current_user),
@@ -132,6 +168,33 @@ async def regenerate_recovery_codes(
     return RecoveryCodesResponse(
         codes=codes,
         message="New recovery codes generated. Previous codes are now invalid. Save these securely.",
+    )
+
+
+@router.post("/admin/generate-recovery-codes", response_model=RecoveryCodesResponse)
+async def admin_generate_recovery_codes(
+    body: AdminGenerateRecoveryCodesRequest,
+    current_user: User = Depends(get_current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin (Partner) only: Generate new recovery codes for a user by email."""
+    result = await db.execute(
+        select(User).where(User.email == body.email)
+    )
+    target_user = result.scalar_one_or_none()
+
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User with this email not found",
+        )
+
+    codes = await generate_recovery_codes(db, target_user.id)
+    await db.commit()
+
+    return RecoveryCodesResponse(
+        codes=codes,
+        message=f"New recovery codes generated for {body.email}. Previous codes are now invalid.",
     )
 
 

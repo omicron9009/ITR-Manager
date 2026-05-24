@@ -1,0 +1,41 @@
+name: Build and Push to Docker Hub
+
+on:
+  push:
+    # Triggers the pipeline on every commit pushed to your main branch
+    branches: [ "backend_only" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      # Set up QEMU for multi-architecture simulation stability if needed
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Sets up Docker Buildx inside the runner to leverage advanced caching layers
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push Application Artifact
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            omicron9009/itr-backend:latest
+            omicron9009/itr-backend:${{ github.sha }}
+          # High-leverage GitHub Action caching: makes subsequent commits build up to 90% faster
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

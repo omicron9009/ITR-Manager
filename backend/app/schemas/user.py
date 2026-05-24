@@ -50,7 +50,7 @@ class TokenResponse(BaseModel):
 # ─── Password Reset / Change ────────────────────────────────
 class PasswordResetRequest(BaseModel):
     email: EmailStr
-    recovery_code: str = Field(..., min_length=1, max_length=20)
+    recovery_code: str = Field(..., min_length=1, max_length=32)
     new_password: str = Field(..., min_length=8, max_length=128)
 
 
@@ -62,6 +62,22 @@ class PasswordChangeRequest(BaseModel):
 class RecoveryCodesResponse(BaseModel):
     codes: list[str]
     message: str
+
+
+# ─── Email Change ────────────────────────────────────────────
+class ChangeEmailRequest(BaseModel):
+    new_email: EmailStr
+    password: str = Field(..., min_length=1)
+
+
+class ChangeEmailResponse(BaseModel):
+    message: str
+    email: str
+
+
+# ─── Admin Recovery Codes ────────────────────────────────────
+class AdminGenerateRecoveryCodesRequest(BaseModel):
+    email: EmailStr
 
 
 # ─── Client Registration ────────────────────────────────────

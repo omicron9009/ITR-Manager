@@ -13,7 +13,7 @@ from app.models.user import User
 
 # Charset without ambiguous characters (no 0/O, 1/I/L)
 _CHARSET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-_CODE_LENGTH = 8
+_CODE_LENGTH = 16
 _CODE_COUNT = 8
 
 

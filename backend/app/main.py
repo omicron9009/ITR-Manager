@@ -11,6 +11,8 @@ from app.config import settings
 from app.core.security import get_current_user
 import sys
 
+from prometheus_fastapi_instrumentator import Instrumentator # type: ignore
+
 logging.basicConfig(
     stream=sys.stdout, 
     level=logging.DEBUG,
@@ -18,6 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app")
 logger.setLevel(logging.DEBUG)
+
 
 
 @asynccontextmanager
@@ -28,6 +31,7 @@ async def lifespan(app: FastAPI):
     await _create_tables()
     await _seed_admin_user()
     await _seed_dashboard_user()
+    
 
     try:
         from app.services.storage_service import ensure_bucket_exists
@@ -46,6 +50,17 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
     lifespan=lifespan,
 )
+
+
+instrumentator = Instrumentator(
+    should_group_status_codes=False,  # Exposes exact codes (200, 404, 500) instead of grouping by 2xx/5xx
+    # should_ignore_untargeted_http_methods=True,
+    should_instrument_requests_inprogress=True,
+    inprogress_name="http_requests_inprogress",
+    inprogress_labels=True,
+)
+instrumentator.instrument(app)
+instrumentator.expose(app, endpoint="/metrics")
 
 # CORS Middleware
 app.add_middleware(
