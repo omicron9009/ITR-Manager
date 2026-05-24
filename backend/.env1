@@ -1,0 +1,76 @@
+# =========================================================
+# ITR Filing Platform — Docker Compose Environment
+# =========================================================
+
+# ======================
+# Application
+# ======================
+APP_NAME=ITR Filing Platform
+APP_VERSION=1.0.0
+DEBUG=true
+API_V1_PREFIX=/api/v1
+
+# ======================
+# PostgreSQL
+# Uses Docker Compose service name
+# ======================
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DB=itr_platform
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_POOL_SIZE=20
+POSTGRES_MAX_OVERFLOW=10
+
+# ======================
+# MinIO Object Storage
+# Uses Docker Compose service name
+# ======================
+MINIO_ENDPOINT=minio:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET_NAME=itr-documents
+MINIO_USE_SSL=false
+
+# Public endpoint used for:
+# - Presigned URLs
+# - Browser/frontend access
+# Replace with your actual machine IP if changed
+MINIO_PUBLIC_ENDPOINT=192.168.1.107:9000
+
+# ======================
+# JWT Authentication
+# ======================
+JWT_SECRET_KEY=dev-secret-key-change-in-production
+JWT_ALGORITHM=HS256
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=60
+
+# ======================
+# Initial Admin Seed User
+# ======================
+ADMIN_EMAIL=admin@itr-platform.com
+ADMIN_PASSWORD=admin123
+ADMIN_FULL_NAME=Platform Admin
+
+# ======================
+# Dashboard Readonly User
+# ======================
+DASHBOARD_USER_EMAIL=viewer@itr-platform.com
+DASHBOARD_USER_PASSWORD=viewer123
+
+# ======================
+# CORS
+# Frontend served through Traefik
+# ======================
+CORS_ORIGINS=["http://app.localhost"]
+
+# ======================
+# Optional Monitoring
+# ======================
+PROMETHEUS_ENABLED=true
+
+# ======================
+# Python/FastAPI Runtime
+# ======================
+PYTHONUNBUFFERED=1
+TZ=Asia/Kolkata

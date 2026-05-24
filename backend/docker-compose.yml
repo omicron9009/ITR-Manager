@@ -1,20 +1,17 @@
-version: "3.8"
+networks:
+  ingress_network:
+    name: itr-frontend-bridge
+  internal_network:
+    name: itr-internal-bridge
+
+volumes:
+  postgres_enterprise_data:
+  minio_enterprise_data:
+  prometheus_enterprise_data:
+  grafana_enterprise_data:
 
 services:
-  api:
-    build: .
-    container_name: itr-api
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_started
-    restart: unless-stopped
-
+  # ===== Data Layer =====
   postgres:
     image: postgres:16-alpine
     container_name: itr-postgres
@@ -22,16 +19,19 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    ports:
-      - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./init-db:/docker-entrypoint-initdb.d
+      - postgres_enterprise_data:/var/lib/postgresql/data
+    networks:
+      - internal_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-itr_admin} -d ${POSTGRES_DB:-itr_filing}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2gb
     restart: unless-stopped
 
   minio:
@@ -39,58 +39,130 @@ services:
     container_name: itr-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
     volumes:
-      - miniodata:/data
-    restart: unless-stopped
-
-  # --- AUTHENTIK ---
-  authentik-redis:
-    image: redis:alpine
-    restart: unless-stopped
+      - minio_enterprise_data:/data
+    networks:
+      - ingress_network
+      - internal_network
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      # Upgraded check: using standard internal minio admin probe 
+      # to ensure it behaves correctly across floating tag updates
+      test: ["CMD-SHELL", "minio server info || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
-
-  authentik-server:
-    image: ghcr.io/goauthentik/server:2024.10.1 # Use latest stable
-    command: server
-    environment:
-      AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: postgres
-      AUTHENTIK_POSTGRESQL__USER: ${POSTGRES_USER}
-      AUTHENTIK_POSTGRESQL__NAME: authentik_db
-      AUTHENTIK_POSTGRESQL__PASSWORD: ${POSTGRES_PASSWORD}
-      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
-    volumes:
-      - ./media:/media
-      - ./custom-templates:/templates
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1gb
+    restart: unless-stopped
+  
+  # ===== SRE Layer =====
+  # ─── INGRESS, ROUTING & SSL LAYER ───────────────────────────
+  traefik:
+    image: traefik:v3.0
+    container_name: itr-traefik
+    command:
+      - "--api.insecure=true" # Accessible on port 8080 for debugging
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
     ports:
-      - "9004:9000" # This is where you log in
-    depends_on:
-      - postgres
-      - authentik-redis
+      - "80:80"       # Public Web HTTP Entrypoint
+      - "8080:8080"   # Traefik Dashboard (Keep closed in cloud firewalls)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - ingress_network
+    deploy:
+      resources:
+        limits:
+          memory: 512mb
+    restart: unless-stopped
 
-  authentik-worker:
-    image: ghcr.io/goauthentik/server:2024.10.1
-    command: worker
-    environment:
-      AUTHENTIK_REDIS__HOST: authentik-redis
-      AUTHENTIK_POSTGRESQL__HOST: postgres
-      AUTHENTIK_POSTGRESQL__USER: ${POSTGRES_USER}
-      AUTHENTIK_POSTGRESQL__NAME: authentik_db
-      AUTHENTIK_POSTGRESQL__PASSWORD: ${POSTGRES_PASSWORD}
-      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+  # ─── APPLICATION LAYER ──────────────────────────────────────
+  backend-api:
+    image: omicron9009/itr-backend:latest
+    container_name: itr-backend-api
+    env_file:
+      - .env1
+    # Traefik auto-detects these routing labels dynamically
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.localhost`)"
+      - "traefik.http.routers.backend.entrypoints=web"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
     depends_on:
-      - postgres
-      - authentik-redis
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - ingress_network
+      - internal_network
+    deploy:
+      resources:
+        limits:
+          memory: 2gb # Slightly elevated to handle your bloated monolith process footprint
+    restart: unless-stopped
 
-volumes:
-  pgdata:
-  miniodata:
+  frontend-app:
+    image: omicron9009/itr-platform-frontend:latest
+    container_name: itr-frontend-ui
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`app.localhost`)"
+      - "traefik.http.routers.frontend.entrypoints=web"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+    depends_on:
+      - backend-api
+    networks:
+      - ingress_network
+    deploy:
+      resources:
+        limits:
+          memory: 512mb
+    restart: unless-stopped
+
+  # ─── OBSERVABILITY & METRICS STACK ──────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: itr-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d' # Keeps metrics from ballooning your 2TB drive
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      # Mounts a dedicated named volume inside the global block
+      - prometheus_enterprise_data:/prometheus
+    networks:
+      - internal_network
+    deploy:
+      resources:
+        limits:
+          memory: 1gb
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: itr-grafana
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.localhost`)"
+      - "traefik.http.routers.grafana.entrypoints=web"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+    volumes:
+      - grafana_enterprise_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - ingress_network
+      - internal_network
+    deploy:
+      resources:
+        limits:
+          memory: 1gb
+    restart: unless-stopped

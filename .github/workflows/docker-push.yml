@@ -36,6 +36,7 @@ jobs:
           tags: |
             omicron9009/itr-backend:latest
             omicron9009/itr-backend:${{ github.sha }}
+            omicron9009/itr-backend:ci_cd
           # High-leverage GitHub Action caching: makes subsequent commits build up to 90% faster
           cache-from: type=gha
           cache-to: type=gha,mode=max
