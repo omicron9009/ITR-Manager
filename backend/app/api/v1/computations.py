@@ -24,7 +24,6 @@ from app.schemas.computation import (
     ComputationUploadURLResponse,
 )
 from app.services.audit_service import record_audit_event
-from app.services.filing_service import transition_filing_status
 from app.services.notification_service import create_notification
 from app.services.storage_service import generate_object_key, get_presigned_download_url, get_presigned_upload_url, validate_object_key_prefix
 
@@ -265,7 +264,17 @@ async def approve_computation(
     current_user: User = Depends(get_current_active_client),
     db: AsyncSession = Depends(get_db),
 ):
-    """Client approves the computation. Transitions filing to FILING."""
+    """
+    Client approves the computation and/or confirms tax payment.
+
+    Two scenarios:
+    - Computation is UPLOADED: approve it + optionally confirm tax paid.
+    - Computation is already APPROVED but is_tax_paid is False on the filing:
+      allow client to call again just to confirm tax payment.
+
+    Filing does NOT auto-transition to FILING. Partner/Executive must manually
+    advance via the /transition endpoint once both conditions are met.
+    """
     comp_result = await db.execute(
         select(FilingComputation).where(FilingComputation.id == body.computation_id)
     )
@@ -278,6 +287,71 @@ async def approve_computation(
 
     if filing.client_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
+
+    from datetime import datetime
+
+    # ── Scenario B: Computation already approved, client is confirming tax payment ──
+    if computation.status == ComputationStatus.APPROVED:
+        if filing.is_tax_paid:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Computation is already approved and tax payment is already confirmed. "
+                       "No further action needed from you.",
+            )
+        if not body.is_tax_paid:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Computation is already approved. Please set is_tax_paid to true to confirm tax payment.",
+            )
+
+        # Confirm tax payment
+        filing.is_tax_paid = True
+        filing.tax_paid_at = datetime.utcnow()
+        filing.updated_by = current_user.id
+
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.COMPUTATION_APPROVED,
+            actor_id=current_user.id,
+            client_id=current_user.id,
+            filing_id=filing.id,
+            document_id=computation.id,
+            details={"action": "tax_payment_confirmed"},
+        )
+
+        # Notify Partner + Executive that filing is ready to advance
+        partner_result = await db.execute(
+            select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+        )
+        partner = partner_result.scalar_one_or_none()
+        if partner:
+            await create_notification(
+                db=db,
+                user_id=partner.id,
+                title="Tax Payment Confirmed",
+                message=f"Tax payment confirmed by {current_user.full_name} for {filing.financial_year}. "
+                        f"Filing is ready to advance to FILING state.",
+                related_filing_id=filing.id,
+                related_client_id=current_user.id,
+            )
+
+        if filing.assigned_executive_id:
+            await create_notification(
+                db=db,
+                user_id=filing.assigned_executive_id,
+                title="Tax Payment Confirmed",
+                message=f"Tax payment confirmed by {current_user.full_name} for {filing.financial_year}. "
+                        f"Filing is ready to advance to FILING state.",
+                related_filing_id=filing.id,
+                related_client_id=current_user.id,
+            )
+
+        return {
+            "message": "Tax payment confirmed. Partner/Executive can now advance the filing to FILING state.",
+            "is_tax_paid": True,
+        }
+
+    # ── Scenario A: Normal approval flow (computation is UPLOADED) ──
 
     # Validate filing is in COMPUTATION state
     if filing.status != FilingStatus.COMPUTATION:
@@ -310,10 +384,18 @@ async def approve_computation(
         )
 
     # Approve computation
-    from datetime import datetime
     computation.status = ComputationStatus.APPROVED
     computation.approved_by = current_user.id
     computation.approved_at = datetime.utcnow()
+
+    # Set computation_approved_at milestone on filing
+    filing.computation_approved_at = datetime.utcnow()
+    filing.updated_by = current_user.id
+
+    # Handle tax payment confirmation
+    if body.is_tax_paid:
+        filing.is_tax_paid = True
+        filing.tax_paid_at = datetime.utcnow()
 
     await record_audit_event(
         db=db,
@@ -322,19 +404,23 @@ async def approve_computation(
         client_id=current_user.id,
         filing_id=filing.id,
         document_id=computation.id,
-    )
-
-    # Transition filing to FILING
-    await transition_filing_status(
-        db=db,
-        filing=filing,
-        to_status=FilingStatus.FILING,
-        changed_by=current_user.id,
-        remarks="Computation approved by client",
-        ip_address=request.client.host if request.client else None,
+        details={"is_tax_paid": body.is_tax_paid},
     )
 
     # Notify Partner + Executive
+    if body.is_tax_paid:
+        notif_title = "Computation Approved & Tax Paid"
+        notif_message = (
+            f"Computation approved and tax payment confirmed by {current_user.full_name} "
+            f"for {filing.financial_year}. Filing is ready to advance to FILING state."
+        )
+    else:
+        notif_title = "Computation Approved"
+        notif_message = (
+            f"Computation approved by {current_user.full_name} for {filing.financial_year}. "
+            f"Awaiting tax payment confirmation from client before filing can advance."
+        )
+
     partner_result = await db.execute(
         select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
     )
@@ -343,8 +429,8 @@ async def approve_computation(
         await create_notification(
             db=db,
             user_id=partner.id,
-            title="Computation Approved",
-            message=f"Computation approved by {current_user.full_name} for {filing.financial_year}",
+            title=notif_title,
+            message=notif_message,
             related_filing_id=filing.id,
             related_client_id=current_user.id,
         )
@@ -353,13 +439,23 @@ async def approve_computation(
         await create_notification(
             db=db,
             user_id=filing.assigned_executive_id,
-            title="Computation Approved",
-            message=f"Computation approved by {current_user.full_name} for {filing.financial_year}",
+            title=notif_title,
+            message=notif_message,
             related_filing_id=filing.id,
             related_client_id=current_user.id,
         )
 
-    return {"message": "Computation approved. Filing moved to FILING state."}
+    if body.is_tax_paid:
+        return {
+            "message": "Computation approved and tax payment confirmed. "
+                       "Partner/Executive can now advance the filing to FILING state.",
+            "is_tax_paid": True,
+        }
+    else:
+        return {
+            "message": "Computation approved. Please confirm tax payment to allow filing to advance.",
+            "is_tax_paid": False,
+        }
 
 
 # ─── POST /computations/reject ──────────────────────────────

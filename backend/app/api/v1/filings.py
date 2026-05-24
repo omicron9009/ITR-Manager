@@ -146,6 +146,8 @@ async def initiate_filing(
         status=filing.status,
         assigned_executive_id=filing.assigned_executive_id,
         initiated_at=filing.initiated_at,
+        is_tax_paid=filing.is_tax_paid,
+        tax_paid_at=filing.tax_paid_at,
         created_at=filing.created_at,
         updated_at=filing.updated_at,
     )
@@ -220,6 +222,8 @@ async def list_filings(
                 documents_approved_at=filing.documents_approved_at,
                 computation_uploaded_at=filing.computation_uploaded_at,
                 computation_approved_at=filing.computation_approved_at,
+                is_tax_paid=filing.is_tax_paid,
+                tax_paid_at=filing.tax_paid_at,
                 filed_at=filing.filed_at,
                 payment_received_at=filing.payment_received_at,
                 completed_at=filing.completed_at,
@@ -272,6 +276,8 @@ async def get_filing(
         documents_approved_at=filing.documents_approved_at,
         computation_uploaded_at=filing.computation_uploaded_at,
         computation_approved_at=filing.computation_approved_at,
+        is_tax_paid=filing.is_tax_paid,
+        tax_paid_at=filing.tax_paid_at,
         filed_at=filing.filed_at,
         payment_received_at=filing.payment_received_at,
         completed_at=filing.completed_at,
@@ -327,6 +333,7 @@ async def transition_filing(
     allowed_forward = {
         (FilingStatus.INITIATED, FilingStatus.DOCUMENT_UPLOAD),
         (FilingStatus.COMPUTATION, FilingStatus.PROCESSING),  # Allow requesting more docs
+        (FilingStatus.COMPUTATION, FilingStatus.FILING),  # Requires computation approved + tax paid
     }
     is_allowed_forward = (filing.status, body.to_status) in allowed_forward
 
@@ -347,6 +354,8 @@ async def transition_filing(
             documents_approved_at=filing.documents_approved_at,
             computation_uploaded_at=filing.computation_uploaded_at,
             computation_approved_at=filing.computation_approved_at,
+            is_tax_paid=filing.is_tax_paid,
+            tax_paid_at=filing.tax_paid_at,
             filed_at=filing.filed_at,
             payment_received_at=filing.payment_received_at,
             completed_at=filing.completed_at,
@@ -361,7 +370,6 @@ async def transition_filing(
         transition_hints = {
             (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING): "Use 'Move to Computation' endpoint — Executive/Partner must manually advance when all documents are approved.",
             (FilingStatus.PROCESSING, FilingStatus.COMPUTATION): "Use 'Move to Computation' endpoint — Executive/Partner must manually advance when all documents are approved.",
-            (FilingStatus.COMPUTATION, FilingStatus.FILING): "Use 'Approve Computation' — the client must approve the computation.",
             (FilingStatus.FILING, FilingStatus.PAYMENT): "Upload all required documents (Acknowledgement, Invoice, ITR JSON, ITR Form) via the completed docs upload.",
             (FilingStatus.PAYMENT, FilingStatus.COMPLETED): "Use 'Mark Payment Received' to complete the filing.",
         }
@@ -375,6 +383,34 @@ async def transition_filing(
             status_code=status.HTTP_409_CONFLICT,
             detail=detail,
         )
+
+    # ── Prerequisite check: COMPUTATION → FILING requires approved computation + tax paid ──
+    if filing.status == FilingStatus.COMPUTATION and body.to_status == FilingStatus.FILING:
+        from app.enums import ComputationStatus
+        from app.models.filing_computation import FilingComputation
+
+        # Check for an approved computation
+        approved_comp_result = await db.execute(
+            select(FilingComputation).where(
+                FilingComputation.filing_id == filing.id,
+                FilingComputation.status == ComputationStatus.APPROVED,
+            )
+        )
+        approved_comp = approved_comp_result.scalar_one_or_none()
+        if not approved_comp:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cannot advance to FILING: No approved computation found. "
+                       "The client must approve the computation first.",
+            )
+
+        # Check tax payment confirmation
+        if not filing.is_tax_paid:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cannot advance to FILING: Tax payment has not been confirmed by the client. "
+                       "The client must confirm tax payment before the filing can advance.",
+            )
 
     filing = await transition_filing_status(
         db=db,
@@ -397,6 +433,8 @@ async def transition_filing(
         documents_approved_at=filing.documents_approved_at,
         computation_uploaded_at=filing.computation_uploaded_at,
         computation_approved_at=filing.computation_approved_at,
+        is_tax_paid=filing.is_tax_paid,
+        tax_paid_at=filing.tax_paid_at,
         filed_at=filing.filed_at,
         payment_received_at=filing.payment_received_at,
         completed_at=filing.completed_at,
@@ -441,6 +479,8 @@ async def halt_filing(
         status=filing.status,
         assigned_executive_id=filing.assigned_executive_id,
         initiated_at=filing.initiated_at,
+        is_tax_paid=filing.is_tax_paid,
+        tax_paid_at=filing.tax_paid_at,
         halted_at=filing.halted_at,
         halt_reason=filing.halt_reason,
         created_at=filing.created_at,

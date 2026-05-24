@@ -23,6 +23,15 @@ async def register_client(
     phone_number: Optional[str] = None,
 ) -> User:
     """Register a new client. Account starts in PENDING_VERIFICATION."""
+    # Check if email already exists
+    existing = await db.execute(select(User).where(User.email == email))
+    if existing.scalar_one_or_none():
+        from fastapi import HTTPException, status
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists.",
+        )
+
     user = User(
         email=email,
         full_name=full_name,

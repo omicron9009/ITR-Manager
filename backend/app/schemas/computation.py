@@ -48,6 +48,7 @@ class ComputationListResponse(BaseModel):
 
 class ComputationApproveRequest(BaseModel):
     computation_id: UUID
+    is_tax_paid: bool = False
 
 
 class ComputationRejectRequest(BaseModel):

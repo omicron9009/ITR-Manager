@@ -237,6 +237,9 @@ async def _sync_new_columns():
         ("filing_computations", "rejection_reason", "TEXT", None),
         # Recovery codes flag on users table
         ("users", "recovery_codes_issued", "BOOLEAN NOT NULL", "'false'"),
+        # Tax payment confirmation on itr_filings table
+        ("itr_filings", "is_tax_paid", "BOOLEAN NOT NULL", "'false'"),
+        ("itr_filings", "tax_paid_at", "TIMESTAMPTZ", None),
     ]
 
     try:

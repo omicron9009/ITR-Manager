@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -27,6 +27,8 @@ class ITRFiling(Base):
     documents_approved_at = Column(DateTime(timezone=True), nullable=True)
     computation_uploaded_at = Column(DateTime(timezone=True), nullable=True)
     computation_approved_at = Column(DateTime(timezone=True), nullable=True)
+    is_tax_paid = Column(Boolean, nullable=False, server_default="false", default=False)
+    tax_paid_at = Column(DateTime(timezone=True), nullable=True)
     filed_at = Column(DateTime(timezone=True), nullable=True)
     payment_received_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)

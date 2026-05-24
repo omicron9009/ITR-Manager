@@ -28,6 +28,8 @@ class FilingResponse(BaseModel):
     documents_approved_at: Optional[datetime] = None
     computation_uploaded_at: Optional[datetime] = None
     computation_approved_at: Optional[datetime] = None
+    is_tax_paid: bool = False
+    tax_paid_at: Optional[datetime] = None
     filed_at: Optional[datetime] = None
     payment_received_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
