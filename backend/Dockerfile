@@ -19,6 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://dl.min.io/server/minio/release/linux-amd64/minio -o /usr/local/bin/minio \
     && chmod +x /usr/local/bin/minio
 
+# ─── Install MinIO Client (mc) for bucket configuration ──────
+RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc \
+    && chmod +x /usr/local/bin/mc
+
 WORKDIR /app
 
 # ─── Python dependencies ─────────────────────────────────────

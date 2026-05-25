@@ -43,10 +43,21 @@ def _get_public_client() -> Minio:
 
 
 def ensure_bucket_exists():
-    """Ensure the default bucket exists."""
+    """Ensure the default bucket exists and has encryption enabled."""
     client = _get_client()
     if not client.bucket_exists(settings.MINIO_BUCKET_NAME):
         client.make_bucket(settings.MINIO_BUCKET_NAME)
+
+    # Enable SSE-S3 auto-encryption if KMS is configured
+    try:
+        from minio.sseconfig import Rule, SSEConfig
+        client.set_bucket_encryption(
+            settings.MINIO_BUCKET_NAME,
+            SSEConfig(Rule.new_sse_s3_rule()),
+        )
+    except Exception:
+        # KMS not configured or MinIO version doesn't support it — skip silently
+        pass
 
 
 def _sanitize_name_for_path(name: str) -> str:

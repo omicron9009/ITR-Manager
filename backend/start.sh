@@ -55,6 +55,39 @@ su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA stop -w"
 # ─── Ensure MinIO data dir ───────────────────────────────────
 mkdir -p /data/minio
 
-# ─── Start all services via supervisord ──────────────────────
+# ─── Set defaults for MinIO env vars (supervisor needs them) ─
+export MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-minioadmin}"
+export MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-minioadmin}"
+export MINIO_KMS_SECRET_KEY="${MINIO_KMS_SECRET_KEY:-}"
+
+# ─── Start all services via supervisord (background) ─────────
 echo "Starting all services..."
-exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+/usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf &
+SUPERVISOR_PID=$!
+
+# ─── Wait for MinIO to be ready, then configure encryption ───
+if [ -n "$MINIO_KMS_SECRET_KEY" ]; then
+    echo "Waiting for MinIO to be ready..."
+    for i in $(seq 1 30); do
+        if mc alias set local http://localhost:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+
+    # Ensure bucket exists
+    BUCKET="${MINIO_BUCKET_NAME:-itr-documents}"
+    mc mb --ignore-existing "local/$BUCKET" 2>/dev/null || true
+
+    # Enable SSE-S3 auto-encryption on the bucket
+    if mc encrypt set sse-s3 "local/$BUCKET" 2>/dev/null; then
+        echo "Bucket '$BUCKET' — SSE-S3 encryption enabled."
+    else
+        echo "Warning: Could not set bucket encryption (MinIO KMS may not be configured)."
+    fi
+else
+    echo "MINIO_KMS_SECRET_KEY not set — bucket encryption disabled."
+fi
+
+# ─── Wait for supervisor (foreground) ────────────────────────
+wait $SUPERVISOR_PID
