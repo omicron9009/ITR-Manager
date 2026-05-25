@@ -4,14 +4,12 @@ networks:
   internal_network:
     name: itr-internal-bridge
 
-volumes:
-  postgres_enterprise_data:
-  minio_enterprise_data:
-  prometheus_enterprise_data:
-  grafana_enterprise_data:
+
 
 services:
-  # ===== Data Layer =====
+  # ═══════════════════════════════════════════════════════════════
+  # DATA LAYER
+  # ═══════════════════════════════════════════════════════════════
   postgres:
     image: postgres:16-alpine
     container_name: itr-postgres
@@ -20,7 +18,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - postgres_enterprise_data:/var/lib/postgresql/data
+      - C:\Users\jadit\Desktop\Me\ITR-Manager-branch\data\postgres:/var/lib/postgresql/data
     networks:
       - internal_network
     healthcheck:
@@ -42,25 +40,29 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
     volumes:
-      - minio_enterprise_data:/data
+      - C:\Users\jadit\Desktop\Me\ITR-Manager-branch\data\minio:/data
+    ports:
+      # Expose MinIO API (presigned URLs) and Console (UI) on LAN
+      - "9000:9000"
+      - "9001:9001"
     networks:
       - ingress_network
       - internal_network
     healthcheck:
-      # Use the built-in MinIO Client to ping the pre-configured 'local' alias
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
       retries: 5
-      # Give it 10 seconds of grace period to spin up disks before failing it
-      start_period: 10s 
+      start_period: 10s
     deploy:
       resources:
         limits:
           memory: 1gb
     restart: unless-stopped
-  # ─── INGRESS, ROUTING & SSL LAYER ───────────────────────────
-  # ===== SRE Layer: Secure Daemon Gateway =====
+
+  # ═══════════════════════════════════════════════════════════════
+  # INGRESS, ROUTING & SSL LAYER
+  # ═══════════════════════════════════════════════════════════════
   traefik:
     image: traefik:v2.11
     container_name: itr-traefik
@@ -68,7 +70,6 @@ services:
       - "--api.insecure=true"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
-      # We are back on native Linux. Hit the raw socket.
       - "--providers.docker.endpoint=unix:///var/run/docker.sock"
       - "--entrypoints.web.address=:80"
       - "--metrics.prometheus=true"
@@ -77,25 +78,27 @@ services:
       - "80:80"
       - "8080:8080"
     volumes:
-      # Mount the socket natively. No Windows translation bugs here.
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - ingress_network
+      - internal_network
     deploy:
       resources:
         limits:
           memory: 512mb
     restart: unless-stopped
-  # ─── APPLICATION LAYER ──────────────────────────────────────
+
+  # ═══════════════════════════════════════════════════════════════
+  # APPLICATION LAYER
+  # ═══════════════════════════════════════════════════════════════
   backend-api:
     image: omicron9009/itr-backend:latest
     container_name: itr-backend-api
     env_file:
       - .env
-    # Traefik auto-detects these routing labels dynamically
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`api.localhost`)"
+      - "traefik.http.routers.backend.rule=Host(`api.localhost`) || PathPrefix(`/api`)"
       - "traefik.http.routers.backend.entrypoints=web"
       - "traefik.http.services.backend.loadbalancer.server.port=8000"
     depends_on:
@@ -109,12 +112,14 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2gb # Slightly elevated to handle your bloated monolith process footprint
+          memory: 2gb
     restart: unless-stopped
 
   frontend-app:
     image: omicron9009/itr-frontend:latest
     container_name: itr-frontend-ui
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`app.localhost`)"
@@ -130,20 +135,41 @@ services:
           memory: 512mb
     restart: unless-stopped
 
-  # ─── OBSERVABILITY & METRICS STACK ──────────────────────────
+  # ═══════════════════════════════════════════════════════════════
+  # CLOUDFLARE TUNNEL (exposes services to the internet)
+  # ═══════════════════════════════════════════════════════════════
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: itr-cloudflared
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - ingress_network
+    depends_on:
+      - traefik
+    deploy:
+      resources:
+        limits:
+          memory: 256mb
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════
+  # OBSERVABILITY & METRICS STACK
+  # ═══════════════════════════════════════════════════════════════
   prometheus:
     image: prom/prometheus:v2.51.0
     container_name: itr-prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=15d' # Keeps metrics from ballooning your 2TB drive
+      - '--storage.tsdb.retention.time=15d'
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      # Mounts a dedicated named volume inside the global block
-      - prometheus_enterprise_data:/prometheus
+      - C:\Users\jadit\Desktop\Me\ITR-Manager-branch\data\prometheus:/prometheus
     networks:
       - internal_network
+      - ingress_network
     deploy:
       resources:
         limits:
@@ -153,13 +179,16 @@ services:
   grafana:
     image: grafana/grafana:10.4.0
     container_name: itr-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.grafana.rule=Host(`grafana.localhost`)"
       - "traefik.http.routers.grafana.entrypoints=web"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
     volumes:
-      - grafana_enterprise_data:/var/lib/grafana 
+      - C:\Users\jadit\Desktop\Me\ITR-Manager-branch\data\grafana:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
     ports:
       - "3050:3000"
     depends_on:
@@ -170,5 +199,5 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1gb
+          memory: 8gb
     restart: unless-stopped
