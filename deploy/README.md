@@ -249,3 +249,36 @@ deploy/
 | Cloudflared not connecting | Invalid tunnel token | Regenerate from Cloudflare dashboard |
 | Prometheus can't scrape Traefik | Network isolation | Both must share `internal_network` (fixed in this config) |
 | Frontend shows blank/errors | `NEXT_PUBLIC_API_URL` wrong | Must include `http://` protocol |
+
+
+
+When deploying with Cloudflare Tunnel to real domains (e.g., `app.yourdomain.com`, `api.yourdomain.com`):
+
+**1. Traefik router rules must match the public domains:**
+```yaml
+# backend-api labels
+- "traefik.http.routers.backend.rule=Host(`api.yourdomain.com`) || Host(`api.localhost`)"
+
+# frontend-app labels
+- "traefik.http.routers.frontend.rule=Host(`app.yourdomain.com`) || Host(`app.localhost`)"
+
+# grafana labels
+- "traefik.http.routers.grafana.rule=Host(`grafana.yourdomain.com`) || Host(`grafana.localhost`)"
+```
+
+**2. .env updates:**
+```env
+NEXT_PUBLIC_API_URL=https://api.yourdomain.com
+CORS_ORIGINS=["https://app.yourdomain.com","http://app.localhost"]
+MINIO_PUBLIC_ENDPOINT=files.yourdomain.com  # if exposing MinIO via tunnel
+```
+
+**3. Cloudflare dashboard tunnel config** (not in compose, done in the web UI):
+
+| Public Hostname | Service | Host Header (optional) |
+|---|---|---|
+| `app.yourdomain.com` | `http://itr-traefik:80` | `app.yourdomain.com` |
+| `api.yourdomain.com` | `http://itr-traefik:80` | `api.yourdomain.com` |
+| `grafana.yourdomain.com` | `http://itr-traefik:80` | `grafana.yourdomain.com` |
+
+**That's it.** No port changes needed — Cloudflare handles HTTPS termination, and the tunnel connects to Traefik internally on port 80. The `localhost` variants in the Host rules keep local dev working simultaneously.
