@@ -243,3 +243,7 @@ docker run -it `
   -e DASHBOARD_USER_PASSWORD="viewer123" `
   omicron9009/itr-platform
 ```
+
+```bash
+docker compose up -d --scale cloudflared=0
+```
