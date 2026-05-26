@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    action_items,
     auth,
     clients,
     computations,
@@ -35,3 +36,4 @@ api_router.include_router(storage.router, prefix="/storage", tags=["Storage"])
 api_router.include_router(email.router, prefix="/email", tags=["Email Configuration"])
 api_router.include_router(tags.router, prefix="/tags", tags=["Tags"])
 api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
+api_router.include_router(action_items.router, prefix="/action-items", tags=["Action Items"])
