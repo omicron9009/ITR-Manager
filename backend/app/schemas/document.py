@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.enums import DocumentStatus
 
@@ -61,8 +61,16 @@ class FilingDocumentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FilingDocumentGroupResponse(BaseModel):
+    """Documents grouped by type — each type may have multiple files."""
+    document_type_id: UUID
+    document_type_name: str
+    files: list[FilingDocumentResponse]
+
+
 class FilingDocumentListResponse(BaseModel):
     items: list[FilingDocumentResponse]
+    groups: list[FilingDocumentGroupResponse] = []
     total: int
     all_approved: bool = False
     pending_count: int = 0
@@ -87,9 +95,19 @@ class DocumentRejectionItem(BaseModel):
 
 # ─── Document Upload URL ────────────────────────────────────
 class DocumentUploadURLRequest(BaseModel):
-    document_id: UUID
+    document_id: Optional[UUID] = None  # For re-upload/replace on existing placeholder
+    filing_id: Optional[UUID] = None  # For additional file upload
+    document_type_id: Optional[UUID] = None  # For additional file upload
     filename: str
     content_type: str
+
+    @model_validator(mode="after")
+    def validate_upload_mode(self):
+        if self.document_id and (self.filing_id or self.document_type_id):
+            raise ValueError("Provide either document_id OR (filing_id + document_type_id), not both")
+        if not self.document_id and not (self.filing_id and self.document_type_id):
+            raise ValueError("Provide either document_id OR (filing_id + document_type_id)")
+        return self
 
 
 class DocumentUploadURLResponse(BaseModel):

@@ -316,6 +316,28 @@ async def _sync_new_columns():
                             f'FOREIGN KEY ("{col_name}") REFERENCES "users"("id") ON DELETE SET NULL'
                         )
                         logger.info(f"Added FK constraint '{constraint_name}'")
+
+            # Drop unique constraint on filing_documents to allow multiple files per type
+            uq_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.table_constraints "
+                "WHERE constraint_name = 'uq_filing_doc_type' AND table_name = 'filing_documents'"
+            )
+            if uq_exists:
+                await conn.execute(
+                    'ALTER TABLE "filing_documents" DROP CONSTRAINT "uq_filing_doc_type"'
+                )
+                logger.info("Dropped unique constraint 'uq_filing_doc_type' (multi-doc support)")
+
+            # Create non-unique index if not exists
+            ix_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_indexes WHERE indexname = 'ix_filing_doc_type'"
+            )
+            if not ix_exists:
+                await conn.execute(
+                    'CREATE INDEX "ix_filing_doc_type" ON "filing_documents" ("filing_id", "document_type_id")'
+                )
+                logger.info("Created index 'ix_filing_doc_type'")
+
         finally:
             await conn.close()
 

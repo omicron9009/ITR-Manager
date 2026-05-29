@@ -24,6 +24,7 @@ from app.schemas.document import (
     DocumentRejectRequest,
     DocumentUploadURLRequest,
     DocumentUploadURLResponse,
+    FilingDocumentGroupResponse,
     FilingDocumentListResponse,
     FilingDocumentResponse,
     MasterDocTypeCreateRequest,
@@ -278,8 +279,27 @@ async def get_filing_documents(
 
     all_approved = summary["APPROVED"] == len(docs) and len(docs) > 0
 
+    # Build grouped response
+    from collections import defaultdict
+    groups_map = defaultdict(list)
+    type_names = {}
+    for item in items:
+        groups_map[item.document_type_id].append(item)
+        if item.document_type_name:
+            type_names[item.document_type_id] = item.document_type_name
+
+    groups = [
+        FilingDocumentGroupResponse(
+            document_type_id=type_id,
+            document_type_name=type_names.get(type_id, "Unknown"),
+            files=file_list,
+        )
+        for type_id, file_list in groups_map.items()
+    ]
+
     return FilingDocumentListResponse(
         items=items,
+        groups=groups,
         total=len(docs),
         all_approved=all_approved,
         pending_count=summary["PENDING_UPLOAD"],
@@ -300,15 +320,44 @@ async def get_document_upload_url(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a pre-signed upload URL for a document placeholder."""
-    doc_result = await db.execute(select(FilingDocument).where(FilingDocument.id == body.document_id))
-    doc = doc_result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document placeholder not found")
+    """Get a pre-signed upload URL for a document placeholder.
 
-    # Get filing for path generation
-    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
-    filing = filing_result.scalar_one_or_none()
+    Supports two modes:
+    1. document_id — upload to an existing placeholder (re-upload / replace)
+    2. filing_id + document_type_id — create a NEW placeholder (additional file)
+    """
+    if body.document_id:
+        # Mode 1: existing placeholder
+        doc_result = await db.execute(select(FilingDocument).where(FilingDocument.id == body.document_id))
+        doc = doc_result.scalar_one_or_none()
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document placeholder not found")
+
+        filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
+        filing = filing_result.scalar_one_or_none()
+    else:
+        # Mode 2: new placeholder for additional file
+        filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == body.filing_id))
+        filing = filing_result.scalar_one_or_none()
+        if not filing:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+        # Validate doc type exists
+        dt_result = await db.execute(
+            select(MasterDocumentType).where(MasterDocumentType.id == body.document_type_id)
+        )
+        if not dt_result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document type not found")
+
+        # Create new placeholder
+        doc = FilingDocument(
+            filing_id=filing.id,
+            document_type_id=body.document_type_id,
+            status=DocumentStatus.PENDING_UPLOAD,
+            assigned_by=current_user.id,
+        )
+        db.add(doc)
+        await db.flush()
 
     await enforce_filing_access(db, current_user, filing.client_id)
 
@@ -329,9 +378,11 @@ async def get_document_upload_url(
 
     upload_url = get_presigned_upload_url(object_key, body.content_type)
 
+    await db.commit()
+
     return DocumentUploadURLResponse(
         upload_url=upload_url,
-        document_id=body.document_id,
+        document_id=doc.id,
         object_key=object_key,
     )
 
@@ -478,6 +529,50 @@ async def get_document_download_url(
         filename=stored_file.original_filename,
         content_type=stored_file.content_type,
     )
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_200_OK)
+async def delete_document(
+    document_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a document placeholder. Only allowed for PENDING_UPLOAD or UPLOADED status."""
+    doc_result = await db.execute(select(FilingDocument).where(FilingDocument.id == document_id))
+    doc = doc_result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
+    filing = filing_result.scalar_one_or_none()
+
+    await enforce_filing_access(db, current_user, filing.client_id)
+
+    if doc.status == DocumentStatus.APPROVED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete an approved document",
+        )
+
+    # Ensure at least 1 placeholder per document type remains
+    count_result = await db.execute(
+        select(FilingDocument)
+        .where(
+            FilingDocument.filing_id == doc.filing_id,
+            FilingDocument.document_type_id == doc.document_type_id,
+        )
+    )
+    same_type_docs = count_result.scalars().all()
+    if len(same_type_docs) <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete the last document of this type. At least one placeholder per type is required.",
+        )
+
+    await db.delete(doc)
+    await db.commit()
+
+    return {"message": "Document deleted successfully"}
 
 
 # ═══════════════════════════════════════════════════════════════

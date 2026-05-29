@@ -26,31 +26,22 @@ async def assign_document_placeholders(
     """Create/update document placeholders for a filing from the master list.
 
     Idempotent: re-sending a checklist will:
-    - Keep existing placeholders that are already UPLOADED/APPROVED/REJECTED
-    - Keep existing PENDING_UPLOAD placeholders whose doc type is still in the new list
-    - Remove PENDING_UPLOAD placeholders whose doc type is NOT in the new list
-    - Create new placeholders for doc types not yet present
+    - Keep ALL existing placeholders (UPLOADED/APPROVED/REJECTED/PENDING_UPLOAD)
+    - Create new placeholders only for doc types not yet present at all
     """
     # Fetch existing placeholders for this filing
     existing_result = await db.execute(
         select(FilingDocument).where(FilingDocument.filing_id == filing_id)
     )
     existing_docs = existing_result.scalars().all()
-    existing_by_type: dict[UUID, FilingDocument] = {doc.document_type_id: doc for doc in existing_docs}
 
-    new_type_ids_set = set(document_type_ids)
+    # Build set of doc types that already have at least one placeholder
+    existing_type_ids: set[UUID] = {doc.document_type_id for doc in existing_docs}
 
-    # Remove PENDING_UPLOAD placeholders not in the new list
-    for doc in existing_docs:
-        if doc.document_type_id not in new_type_ids_set and doc.status == DocumentStatus.PENDING_UPLOAD:
-            await db.delete(doc)
-
-    # Create placeholders for new doc types (skip if already exists)
-    placeholders = []
+    # Create placeholders only for doc types not yet present
+    placeholders = list(existing_docs)
     for doc_type_id in document_type_ids:
-        if doc_type_id in existing_by_type:
-            # Already exists — keep it as-is
-            placeholders.append(existing_by_type[doc_type_id])
+        if doc_type_id in existing_type_ids:
             continue
 
         placeholder = FilingDocument(

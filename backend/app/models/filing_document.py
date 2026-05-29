@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import Column, DateTime, Enum, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -38,5 +38,6 @@ class FilingDocument(Base):
     assigner = relationship("User", foreign_keys=[assigned_by])
 
     __table_args__ = (
-        UniqueConstraint("filing_id", "document_type_id", name="uq_filing_doc_type"),
+        # Performance index — no uniqueness enforced (multiple files per type allowed)
+        Index("ix_filing_doc_type", "filing_id", "document_type_id"),
     )

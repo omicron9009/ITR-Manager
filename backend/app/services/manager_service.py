@@ -358,28 +358,33 @@ async def ensure_manager_client_link(
         select(ManagerClientAssignment).where(
             ManagerClientAssignment.manager_id == manager_id,
             ManagerClientAssignment.client_id == client_id,
-            ManagerClientAssignment.is_active == True,
         )
     )
-    if existing.scalar_one_or_none():
-        return  # Already linked
-
-    # Deactivate any other active manager for this client
-    other = await db.execute(
-        select(ManagerClientAssignment).where(
-            ManagerClientAssignment.client_id == client_id,
-            ManagerClientAssignment.is_active == True,
+    existing_row = existing.scalar_one_or_none()
+    if existing_row:
+        if existing_row.is_active:
+            return  # Already linked
+        # Reactivate the existing inactive row
+        existing_row.is_active = True
+        existing_row.assigned_by = assigned_by
+    else:
+        # Deactivate any other active manager for this client
+        other = await db.execute(
+            select(ManagerClientAssignment).where(
+                ManagerClientAssignment.client_id == client_id,
+                ManagerClientAssignment.is_active == True,
+            )
         )
-    )
-    for row in other.scalars().all():
-        row.is_active = False
+        for row in other.scalars().all():
+            row.is_active = False
 
-    assignment = ManagerClientAssignment(
-        manager_id=manager_id,
-        client_id=client_id,
-        assigned_by=assigned_by,
-    )
-    db.add(assignment)
+        assignment = ManagerClientAssignment(
+            manager_id=manager_id,
+            client_id=client_id,
+            assigned_by=assigned_by,
+        )
+        db.add(assignment)
+
     await db.flush()
 
 
