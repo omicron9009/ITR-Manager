@@ -247,13 +247,13 @@ async def _send_engagement_letter_email(
 @router.post("/{filing_id}/update-fee", response_model=dict)
 async def update_filing_fee(
     filing_id: UUID,
-    fee: float = Query(..., gt=0, description="New professional fee in rupees"),
+    fee: float = Query(..., gt=0, description="Proposed professional fee in rupees"),
     current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update professional fee for a specific filing. Partner only. Regenerates engagement letter PDF."""
+    """Propose a fee change for a filing. Partner only. Client must approve before it takes effect."""
     from decimal import Decimal
-    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter
+    from datetime import datetime
 
     if current_user.role != UserRole.PARTNER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Partner can update professional fee")
@@ -263,35 +263,172 @@ async def update_filing_fee(
     if not filing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
 
-    # Get client details for PDF
-    client_result = await db.execute(select(User).where(User.id == filing.client_id))
-    client = client_result.scalar_one_or_none()
+    if filing.proposed_fee is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A fee change is already pending client approval. Wait for client response first.",
+        )
 
     new_fee = Decimal(str(fee))
-    filing.professional_fee = new_fee
+    filing.proposed_fee = new_fee
+    filing.fee_proposed_at = datetime.utcnow()
+    filing.fee_proposed_by = current_user.id
 
-    # Regenerate engagement letter PDF with updated fee
-    from datetime import datetime
-    accepted_at = filing.engagement_accepted_at or datetime.utcnow()
-    pdf_bytes = generate_engagement_letter_pdf(
-        client_name=client.full_name,
-        financial_year=filing.financial_year,
-        professional_fee=new_fee,
-        accepted_at=accepted_at,
+    # Notify client about fee change
+    await create_notification(
+        db=db,
+        user_id=filing.client_id,
+        title="Professional Fee Change Proposed",
+        message=f"A revised professional fee of Rs. {fee:.2f} has been proposed for your ITR filing ({filing.financial_year}). Please review and approve.",
+        related_filing_id=filing.id,
+        related_client_id=filing.client_id,
     )
-    engagement_key = upload_engagement_letter(
-        client_id=str(filing.client_id),
-        client_name=client.full_name,
-        financial_year=filing.financial_year,
-        pdf_bytes=pdf_bytes,
-    )
-    filing.engagement_letter_key = engagement_key
 
     await db.flush()
     await db.commit()
 
     return {
-        "message": f"Professional fee updated to ₹{fee:.2f} and engagement letter regenerated",
+        "message": f"Fee change of Rs. {fee:.2f} proposed. Awaiting client approval.",
+        "filing_id": str(filing_id),
+        "proposed_fee": float(new_fee),
+    }
+
+
+# ─── POST /filings/{filing_id}/approve-fee ──────────────────
+@router.post("/{filing_id}/approve-fee", response_model=dict)
+async def approve_fee_change(
+    filing_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_active_client),
+    db: AsyncSession = Depends(get_db),
+):
+    """Client approves a proposed fee change. Updates fee and regenerates engagement letter."""
+    from decimal import Decimal
+    from datetime import datetime
+    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter
+
+    result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
+    filing = result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    if filing.client_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
+
+    if filing.proposed_fee is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No pending fee change to approve")
+
+    # Apply the proposed fee
+    old_fee = filing.professional_fee
+    filing.professional_fee = filing.proposed_fee
+    filing.proposed_fee = None
+    filing.fee_proposed_at = None
+    filing.fee_proposed_by = None
+
+    # Also update the client profile's base fee
+    profile_result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == current_user.id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if profile:
+        profile.professional_fee = filing.professional_fee
+
+    # Regenerate engagement letter PDF with updated fee
+    accepted_at = filing.engagement_accepted_at or datetime.utcnow()
+    pdf_bytes = generate_engagement_letter_pdf(
+        client_name=current_user.full_name,
+        financial_year=filing.financial_year,
+        professional_fee=filing.professional_fee,
+        accepted_at=accepted_at,
+    )
+    engagement_key = upload_engagement_letter(
+        client_id=str(current_user.id),
+        client_name=current_user.full_name,
+        financial_year=filing.financial_year,
+        pdf_bytes=pdf_bytes,
+    )
+    filing.engagement_letter_key = engagement_key
+
+    # Notify Partner
+    from app.models.user import User as UserModel
+    partner_result = await db.execute(
+        select(UserModel).where(UserModel.role == UserRole.PARTNER, UserModel.is_active == True)
+    )
+    partner = partner_result.scalar_one_or_none()
+    if partner:
+        await create_notification(
+            db=db,
+            user_id=partner.id,
+            title="Fee Change Approved",
+            message=f"{current_user.full_name} approved the revised fee of Rs. {filing.professional_fee:.2f} for {filing.financial_year}.",
+            related_filing_id=filing.id,
+            related_client_id=current_user.id,
+        )
+
+    # Email updated engagement letter to client (background)
+    background_tasks.add_task(
+        _send_engagement_letter_email,
+        client_email=current_user.email,
+        client_name=current_user.full_name,
+        financial_year=filing.financial_year,
+        pdf_bytes=pdf_bytes,
+    )
+
+    await db.flush()
+    await db.commit()
+
+    return {
+        "message": f"Fee change approved. Updated to Rs. {filing.professional_fee:.2f}. Updated engagement letter has been emailed.",
+        "filing_id": str(filing_id),
+        "professional_fee": float(filing.professional_fee),
+    }
+
+
+# ─── POST /filings/{filing_id}/reject-fee ───────────────────
+@router.post("/{filing_id}/reject-fee", response_model=dict)
+async def reject_fee_change(
+    filing_id: UUID,
+    current_user: User = Depends(get_current_active_client),
+    db: AsyncSession = Depends(get_db),
+):
+    """Client rejects a proposed fee change. Fee stays unchanged."""
+    result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
+    filing = result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    if filing.client_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
+
+    if filing.proposed_fee is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No pending fee change to reject")
+
+    rejected_fee = filing.proposed_fee
+    filing.proposed_fee = None
+    filing.fee_proposed_at = None
+    filing.fee_proposed_by = None
+
+    # Notify Partner about rejection
+    from app.models.user import User as UserModel
+    partner_result = await db.execute(
+        select(UserModel).where(UserModel.role == UserRole.PARTNER, UserModel.is_active == True)
+    )
+    partner = partner_result.scalar_one_or_none()
+    if partner:
+        await create_notification(
+            db=db,
+            user_id=partner.id,
+            title="Fee Change Rejected",
+            message=f"{current_user.full_name} rejected the proposed fee of Rs. {rejected_fee:.2f} for {filing.financial_year}. Current fee remains Rs. {filing.professional_fee:.2f}.",
+            related_filing_id=filing.id,
+            related_client_id=current_user.id,
+        )
+
+    await db.flush()
+    await db.commit()
+
+    return {
+        "message": f"Fee change rejected. Current fee remains Rs. {filing.professional_fee:.2f}.",
         "filing_id": str(filing_id),
     }
 

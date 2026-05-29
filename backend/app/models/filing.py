@@ -38,6 +38,11 @@ class ITRFiling(Base):
     engagement_accepted_at = Column(DateTime(timezone=True), nullable=True)
     engagement_letter_key = Column(Text, nullable=True)
 
+    # Fee change proposal
+    proposed_fee = Column(Numeric(10, 2), nullable=True)
+    fee_proposed_at = Column(DateTime(timezone=True), nullable=True)
+    fee_proposed_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
     # Halt info
     halted_at = Column(DateTime(timezone=True), nullable=True)
     halted_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

@@ -40,6 +40,8 @@ class FilingResponse(BaseModel):
     is_tax_paid: bool = False
     tax_paid_at: Optional[datetime] = None
     professional_fee: Optional[Decimal] = None
+    proposed_fee: Optional[Decimal] = None
+    fee_proposed_at: Optional[datetime] = None
     engagement_accepted_at: Optional[datetime] = None
     filed_at: Optional[datetime] = None
     payment_received_at: Optional[datetime] = None

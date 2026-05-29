@@ -260,6 +260,10 @@ async def _sync_new_columns():
         ("itr_filings", "professional_fee", "NUMERIC(10,2)", None),
         ("itr_filings", "engagement_accepted_at", "TIMESTAMPTZ", None),
         ("itr_filings", "engagement_letter_key", "TEXT", None),
+        # Fee change proposal fields on itr_filings
+        ("itr_filings", "proposed_fee", "NUMERIC(10,2)", None),
+        ("itr_filings", "fee_proposed_at", "TIMESTAMPTZ", None),
+        ("itr_filings", "fee_proposed_by", "UUID", None),
     ]
 
     try:
