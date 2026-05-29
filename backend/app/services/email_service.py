@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
@@ -143,3 +144,53 @@ async def send_notification_email(
     </html>
     """
     return await send_email(to_email=to_email, subject=title, body_html=html_body, db=db)
+
+
+async def send_email_with_attachment(
+    to_email: str,
+    subject: str,
+    body_html: str,
+    attachment_bytes: bytes,
+    attachment_filename: str,
+    attachment_content_type: str = "application/pdf",
+    body_text: Optional[str] = None,
+    db: Optional[AsyncSession] = None,
+) -> bool:
+    """Send an email with a file attachment via Gmail API."""
+    if db is None:
+        logger.warning(f"Email skipped (no db session): to={to_email}, subject={subject}")
+        return False
+
+    service, sender_email = await _get_gmail_service(db)
+
+    if not service:
+        logger.warning(f"Email skipped (not configured): to={to_email}, subject={subject}")
+        return False
+
+    try:
+        message = MIMEMultipart("mixed")
+        message["to"] = to_email
+        message["from"] = sender_email
+        message["subject"] = subject
+
+        # Body part
+        body_part = MIMEMultipart("alternative")
+        if body_text:
+            body_part.attach(MIMEText(body_text, "plain"))
+        body_part.attach(MIMEText(body_html, "html"))
+        message.attach(body_part)
+
+        # Attachment
+        maintype, subtype = attachment_content_type.split("/", 1)
+        attachment = MIMEApplication(attachment_bytes, _subtype=subtype)
+        attachment.add_header("Content-Disposition", "attachment", filename=attachment_filename)
+        message.attach(attachment)
+
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        await asyncio.to_thread(_send_gmail_message, service, raw)
+
+        logger.info(f"Email with attachment sent: to={to_email}, subject={subject}, file={attachment_filename}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email with attachment to {to_email}: {str(e)}", exc_info=True)
+        return False

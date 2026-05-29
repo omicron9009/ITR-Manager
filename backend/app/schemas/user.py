@@ -1,6 +1,7 @@
 """Schemas — User and Client related request/response models."""
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
@@ -88,6 +89,18 @@ class ClientRegistrationRequest(BaseModel):
     phone_number: Optional[str] = Field(None, max_length=20)
     declaration_accepted: bool = Field(..., description="Must be true to indicate consent to the data protection declaration")
 
+    # Income Heads (Yes/No)
+    salary: bool = Field(False)
+    esop: bool = Field(False)
+    rental_income: bool = Field(False)
+    more_than_2_properties: bool = Field(False)
+    capital_gain_shares: bool = Field(False)
+    capital_gain_land: bool = Field(False)
+    business_profession: bool = Field(False)
+    interest_dividend: bool = Field(False)
+    foreign_assets: bool = Field(False)
+    any_other: bool = Field(False)
+
     @field_validator("declaration_accepted")
     @classmethod
     def validate_declaration_accepted(cls, v: bool) -> bool:
@@ -118,6 +131,7 @@ class ClientRegistrationResponse(BaseModel):
 # ─── Client Activation / Rejection ──────────────────────────
 class ClientActivationRequest(BaseModel):
     client_id: UUID
+    professional_fee: Optional[Decimal] = Field(None, gt=0, description="Professional fee in rupees (set by Partner)")
 
 
 class ClientRejectionRequest(BaseModel):
@@ -137,6 +151,21 @@ class ClientProfileUpdate(BaseModel):
     form_data: Optional[dict[str, Any]] = None
 
 
+class IncomeHeadsResponse(BaseModel):
+    salary: bool = False
+    esop: bool = False
+    rental_income: bool = False
+    more_than_2_properties: bool = False
+    capital_gain_shares: bool = False
+    capital_gain_land: bool = False
+    business_profession: bool = False
+    interest_dividend: bool = False
+    foreign_assets: bool = False
+    any_other: bool = False
+
+    model_config = {"from_attributes": True}
+
+
 class ClientProfileResponse(BaseModel):
     id: UUID
     user_id: UUID
@@ -154,6 +183,8 @@ class ClientProfileResponse(BaseModel):
     form_submitted_at: Optional[datetime] = None
     assigned_executive_id: Optional[UUID] = None
     assigned_executive_name: Optional[str] = None
+    income_heads: Optional[IncomeHeadsResponse] = None
+    professional_fee: Optional[Decimal] = None
     created_at: datetime
     updated_at: datetime
 

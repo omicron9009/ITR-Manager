@@ -254,6 +254,12 @@ async def _sync_new_columns():
         ("itr_filings", "tax_paid_at", "TIMESTAMPTZ", None),
         # Declaration consent timestamp on client_profiles table
         ("client_profiles", "declaration_accepted_at", "TIMESTAMPTZ", None),
+        # Professional fee on client_profiles
+        ("client_profiles", "professional_fee", "NUMERIC(10,2)", None),
+        # Engagement letter fields on itr_filings
+        ("itr_filings", "professional_fee", "NUMERIC(10,2)", None),
+        ("itr_filings", "engagement_accepted_at", "TIMESTAMPTZ", None),
+        ("itr_filings", "engagement_letter_key", "TEXT", None),
     ]
 
     try:

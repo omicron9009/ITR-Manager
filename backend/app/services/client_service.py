@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import AccountStatus, AuditEventType, UserRole
 from app.models.client_profile import ClientProfile
+from app.models.client_income_heads import ClientIncomeHeads
 from app.models.user import User
 from app.services.audit_service import record_audit_event
 from app.services.declaration_service import generate_declaration_pdf
@@ -22,6 +23,7 @@ async def register_client(
     full_name: str,
     password_hash: str,
     phone_number: Optional[str] = None,
+    income_heads: Optional[dict] = None,
 ) -> User:
     """Register a new client. Account starts in PENDING_VERIFICATION."""
     # Check if email already exists
@@ -48,6 +50,13 @@ async def register_client(
     now = datetime.utcnow()
     profile = ClientProfile(user_id=user.id, declaration_accepted_at=now)
     db.add(profile)
+
+    # Store income heads
+    if income_heads:
+        heads = ClientIncomeHeads(user_id=user.id, **income_heads)
+    else:
+        heads = ClientIncomeHeads(user_id=user.id)
+    db.add(heads)
 
     # Generate and upload declaration PDF to MinIO
     pdf_bytes = generate_declaration_pdf(
@@ -91,6 +100,7 @@ async def activate_client(
     client_id: UUID,
     activated_by: UUID,
     ip_address: Optional[str] = None,
+    professional_fee=None,
 ) -> User:
     """Activate a client account (Partner action)."""
     from fastapi import HTTPException, status as http_status
@@ -113,6 +123,15 @@ async def activate_client(
     client.activated_at = datetime.utcnow()
     client.activated_by = activated_by
 
+    # Store professional fee on profile if provided
+    if professional_fee is not None:
+        profile_result = await db.execute(
+            select(ClientProfile).where(ClientProfile.user_id == client_id)
+        )
+        profile = profile_result.scalar_one_or_none()
+        if profile:
+            profile.professional_fee = professional_fee
+
     await record_audit_event(
         db=db,
         event_type=AuditEventType.ACCOUNT_ACTIVATED,
@@ -127,6 +146,18 @@ async def activate_client(
         title="Account Verified",
         message="Your account has been verified. You may now initiate your ITR filing.",
     )
+
+    # Notify Partner if fee not set
+    if professional_fee is None:
+        partner = await _get_partner(db)
+        if partner:
+            await create_notification(
+                db=db,
+                user_id=partner.id,
+                title="Professional Fee Pending",
+                message=f"Professional fee has not been set for client {client.full_name}. Please set it before filing can begin.",
+                related_client_id=client_id,
+            )
 
     # Create the client's base directory in MinIO
     ensure_bucket_exists()

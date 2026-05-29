@@ -44,6 +44,18 @@ async def register_new_client(
         full_name=request_data.full_name,
         password_hash=hash_password(request_data.password),
         phone_number=request_data.phone_number,
+        income_heads={
+            "salary": request_data.salary,
+            "esop": request_data.esop,
+            "rental_income": request_data.rental_income,
+            "more_than_2_properties": request_data.more_than_2_properties,
+            "capital_gain_shares": request_data.capital_gain_shares,
+            "capital_gain_land": request_data.capital_gain_land,
+            "business_profession": request_data.business_profession,
+            "interest_dividend": request_data.interest_dividend,
+            "foreign_assets": request_data.foreign_assets,
+            "any_other": request_data.any_other,
+        },
     )
     return ClientRegistrationResponse(
         id=user.id,
@@ -67,6 +79,7 @@ async def activate_client_account(
         client_id=body.client_id,
         activated_by=current_user.id,
         ip_address=request.client.host if request.client else None,
+        professional_fee=body.professional_fee,
     )
     return {"message": f"Client {client.full_name} has been activated", "client_id": str(client.id)}
 
@@ -88,6 +101,47 @@ async def reject_client_account(
         ip_address=request.client.host if request.client else None,
     )
     return {"message": f"Client {client.full_name} registration rejected", "client_id": str(client.id)}
+
+
+# ─── POST /clients/{client_id}/set-fee ──────────────────────
+@router.post("/{client_id}/set-fee", response_model=dict)
+async def set_client_fee(
+    client_id: UUID,
+    fee: float = Query(..., gt=0, description="Professional fee in rupees"),
+    current_user: User = Depends(get_current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set or update the professional fee for a client. Partner only."""
+    from fastapi import HTTPException, status
+    from decimal import Decimal
+    from app.services.notification_service import create_notification
+
+    result = await db.execute(select(User).where(User.id == client_id, User.role == UserRole.CLIENT))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+
+    profile_result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == client_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client profile not found")
+
+    profile.professional_fee = Decimal(str(fee))
+    await db.flush()
+
+    # Notify client that fee is set and they can proceed with filing
+    await create_notification(
+        db=db,
+        user_id=client_id,
+        title="Engagement Fee Set",
+        message=f"Your professional fee has been set. You may now initiate your ITR filing and accept the Engagement Letter.",
+        related_client_id=client_id,
+    )
+
+    await db.commit()
+    return {"message": f"Professional fee set to ₹{fee:.2f} for {client.full_name}", "client_id": str(client_id)}
 
 
 # ─── GET /clients ───────────────────────────────────────────
@@ -228,6 +282,7 @@ async def get_client_profile(
 
     # Fetch assigned executive
     from app.models.executive_assignment import ExecutiveClientAssignment
+    from app.models.client_income_heads import ClientIncomeHeads
     exec_result = await db.execute(
         select(ExecutiveClientAssignment).where(
             ExecutiveClientAssignment.client_id == client_id,
@@ -244,7 +299,15 @@ async def get_client_profile(
             exec_id = exec_user.id
             exec_name = exec_user.full_name
 
-    from app.schemas.user import ClientProfileResponse
+    from app.schemas.user import ClientProfileResponse, IncomeHeadsResponse
+
+    # Fetch income heads
+    heads_result = await db.execute(
+        select(ClientIncomeHeads).where(ClientIncomeHeads.user_id == client_id)
+    )
+    heads = heads_result.scalar_one_or_none()
+    income_heads_data = IncomeHeadsResponse.model_validate(heads) if heads else None
+
     return ClientProfileResponse(
         id=profile.id,
         user_id=profile.user_id,
@@ -262,6 +325,8 @@ async def get_client_profile(
         form_submitted_at=profile.form_submitted_at,
         assigned_executive_id=exec_id,
         assigned_executive_name=exec_name,
+        income_heads=income_heads_data,
+        professional_fee=profile.professional_fee,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
     )

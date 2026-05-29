@@ -19,3 +19,4 @@ from app.models.tag import Tag  # noqa: F401
 from app.models.executive_tag import ExecutiveTag  # noqa: F401
 from app.models.manager_tag import ManagerTag  # noqa: F401
 from app.models.recovery_code import RecoveryCode  # noqa: F401
+from app.models.client_income_heads import ClientIncomeHeads  # noqa: F401

@@ -3,7 +3,7 @@
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,7 @@ router = APIRouter()
 async def initiate_filing(
     body: FilingInitiateRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_active_client),
     db: AsyncSession = Depends(get_db),
 ):
@@ -61,12 +62,40 @@ async def initiate_filing(
     if not profile or not profile.form_submitted_at:
         raise OnboardingFormNotSubmittedError()
 
+    # Ensure professional fee has been set by Partner before client can file
+    if not profile.professional_fee:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Professional fee has not been set by the firm. Please contact support.",
+        )
+
+    # Generate engagement letter PDF and upload to MinIO
+    from datetime import datetime
+    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter
+
+    now = datetime.utcnow()
+    pdf_bytes = generate_engagement_letter_pdf(
+        client_name=current_user.full_name,
+        financial_year=body.financial_year,
+        professional_fee=profile.professional_fee,
+        accepted_at=now,
+    )
+    engagement_key = upload_engagement_letter(
+        client_id=str(current_user.id),
+        client_name=current_user.full_name,
+        financial_year=body.financial_year,
+        pdf_bytes=pdf_bytes,
+    )
+
     # Create filing
     filing = ITRFiling(
         client_id=current_user.id,
         financial_year=body.financial_year,
         status=FilingStatus.INITIATED,
         created_by=current_user.id,
+        professional_fee=profile.professional_fee,
+        engagement_accepted_at=now,
+        engagement_letter_key=engagement_key,
     )
     db.add(filing)
     await db.flush()
@@ -137,6 +166,15 @@ async def initiate_filing(
         related_filing_id=filing.id,
     )
 
+    # Email engagement letter PDF to client (async background task)
+    background_tasks.add_task(
+        _send_engagement_letter_email,
+        client_email=current_user.email,
+        client_name=current_user.full_name,
+        financial_year=body.financial_year,
+        pdf_bytes=pdf_bytes,
+    )
+
     await db.flush()
     return FilingResponse(
         id=filing.id,
@@ -148,9 +186,114 @@ async def initiate_filing(
         initiated_at=filing.initiated_at,
         is_tax_paid=filing.is_tax_paid,
         tax_paid_at=filing.tax_paid_at,
+        professional_fee=filing.professional_fee,
+        engagement_accepted_at=filing.engagement_accepted_at,
         created_at=filing.created_at,
         updated_at=filing.updated_at,
     )
+
+
+async def _send_engagement_letter_email(
+    client_email: str,
+    client_name: str,
+    financial_year: str,
+    pdf_bytes: bytes,
+):
+    """Background task: email engagement letter PDF to client."""
+    from app.database import AsyncSessionLocal
+    from app.services.email_service import send_email_with_attachment
+    from app.config import settings
+
+    subject = f"Engagement Letter - ITR Filing {financial_year}"
+    html_body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: #1a56db; padding: 20px; color: white; text-align: center;">
+            <h2>{settings.APP_NAME}</h2>
+        </div>
+        <div style="padding: 20px; border: 1px solid #e5e7eb;">
+            <h3>Engagement Letter - {financial_year}</h3>
+            <p>Dear {client_name},</p>
+            <p>Thank you for initiating your ITR filing for the financial year {financial_year}.</p>
+            <p>Please find attached your signed Engagement Letter for Income Tax Return Filing Services
+            with P G Joshi and Co LLP.</p>
+            <p>This document confirms your acceptance of the terms of engagement.</p>
+            <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
+            <p style="color: #6b7280; font-size: 12px;">
+                This is an automated email from {settings.APP_NAME}. Please retain this for your records.
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await send_email_with_attachment(
+                to_email=client_email,
+                subject=subject,
+                body_html=html_body,
+                attachment_bytes=pdf_bytes,
+                attachment_filename=f"Engagement_Letter_{financial_year}.pdf",
+                db=db,
+            )
+            await db.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger("app").error(f"Failed to email engagement letter to {client_email}: {e}")
+
+
+# ─── POST /filings/{filing_id}/update-fee ───────────────────
+@router.post("/{filing_id}/update-fee", response_model=dict)
+async def update_filing_fee(
+    filing_id: UUID,
+    fee: float = Query(..., gt=0, description="New professional fee in rupees"),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update professional fee for a specific filing. Partner only. Regenerates engagement letter PDF."""
+    from decimal import Decimal
+    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter
+
+    if current_user.role != UserRole.PARTNER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Partner can update professional fee")
+
+    result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
+    filing = result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    # Get client details for PDF
+    client_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client = client_result.scalar_one_or_none()
+
+    new_fee = Decimal(str(fee))
+    filing.professional_fee = new_fee
+
+    # Regenerate engagement letter PDF with updated fee
+    from datetime import datetime
+    accepted_at = filing.engagement_accepted_at or datetime.utcnow()
+    pdf_bytes = generate_engagement_letter_pdf(
+        client_name=client.full_name,
+        financial_year=filing.financial_year,
+        professional_fee=new_fee,
+        accepted_at=accepted_at,
+    )
+    engagement_key = upload_engagement_letter(
+        client_id=str(filing.client_id),
+        client_name=client.full_name,
+        financial_year=filing.financial_year,
+        pdf_bytes=pdf_bytes,
+    )
+    filing.engagement_letter_key = engagement_key
+
+    await db.flush()
+    await db.commit()
+
+    return {
+        "message": f"Professional fee updated to ₹{fee:.2f} and engagement letter regenerated",
+        "filing_id": str(filing_id),
+    }
 
 
 # ─── GET /filings ───────────────────────────────────────────
