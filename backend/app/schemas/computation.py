@@ -32,6 +32,13 @@ class ComputationResponse(BaseModel):
     uploaded_by: UUID
     uploaded_by_name: Optional[str] = None
     uploaded_at: datetime
+    manager_approved_by: Optional[UUID] = None
+    manager_approved_at: Optional[datetime] = None
+    manager_rejected_by: Optional[UUID] = None
+    manager_rejected_at: Optional[datetime] = None
+    manager_rejection_reason: Optional[str] = None
+    partner_approved_by: Optional[UUID] = None
+    partner_approved_at: Optional[datetime] = None
     approved_by: Optional[UUID] = None
     approved_at: Optional[datetime] = None
     rejected_by: Optional[UUID] = None
@@ -52,5 +59,23 @@ class ComputationApproveRequest(BaseModel):
 
 
 class ComputationRejectRequest(BaseModel):
+    computation_id: UUID
+    reason: str
+
+
+class ComputationManagerApproveRequest(BaseModel):
+    computation_id: UUID
+
+
+class ComputationManagerRejectRequest(BaseModel):
+    computation_id: UUID
+    reason: str
+
+
+class ComputationPartnerApproveRequest(BaseModel):
+    computation_id: UUID
+
+
+class ComputationPartnerRejectRequest(BaseModel):
     computation_id: UUID
     reason: str

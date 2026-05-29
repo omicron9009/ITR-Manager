@@ -8,16 +8,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.file_validation import validate_file_size, validate_file_type
 from app.core.permissions import enforce_filing_access
-from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_user
+from app.core.security import (
+    get_current_active_client,
+    get_current_manager_executive_or_partner,
+    get_current_manager_or_partner,
+    get_current_user,
+)
 from app.database import get_db
 from app.enums import AuditEventType, ComputationStatus, FilingStatus, UserRole
 from app.models.filing import ITRFiling
 from app.models.filing_computation import FilingComputation
+from app.models.manager_executive_assignment import ManagerExecutiveAssignment
 from app.models.stored_file import StoredFile
 from app.models.user import User
 from app.schemas.computation import (
     ComputationApproveRequest,
     ComputationListResponse,
+    ComputationManagerApproveRequest,
+    ComputationManagerRejectRequest,
+    ComputationPartnerApproveRequest,
+    ComputationPartnerRejectRequest,
     ComputationRejectRequest,
     ComputationResponse,
     ComputationUploadRequest,
@@ -34,7 +44,7 @@ router = APIRouter()
 @router.post("/upload-url", response_model=ComputationUploadURLResponse)
 async def get_computation_upload_url(
     body: ComputationUploadRequest,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a pre-signed URL to upload a computation document (Executive/Partner)."""
@@ -108,7 +118,7 @@ async def confirm_computation_upload(
     content_type: str,
     file_size: int,
     version: int,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
     """Confirm computation upload after file is in MinIO."""
@@ -176,14 +186,53 @@ async def confirm_computation_upload(
         details={"version": version, "filename": filename},
     )
 
-    # Notify client
-    await create_notification(
-        db=db,
-        user_id=filing.client_id,
-        title="Computation Ready",
-        message="Your tax computation is ready for review.",
-        related_filing_id=filing_id,
-    )
+    # Notify manager for approval (if executive uploaded, notify their manager)
+    # If manager or partner uploaded, notify partner directly
+    if current_user.role == UserRole.EXECUTIVE:
+        # Find the manager for this executive
+        mgr_assignment_result = await db.execute(
+            select(ManagerExecutiveAssignment).where(
+                ManagerExecutiveAssignment.executive_id == current_user.id,
+                ManagerExecutiveAssignment.is_active == True,
+            )
+        )
+        mgr_assignment = mgr_assignment_result.scalar_one_or_none()
+        if mgr_assignment:
+            await create_notification(
+                db=db,
+                user_id=mgr_assignment.manager_id,
+                title="Computation Uploaded — Review Required",
+                message=f"A computation has been uploaded by {current_user.full_name} for review.",
+                related_filing_id=filing_id,
+            )
+        else:
+            # No manager — notify partner directly
+            partner_result = await db.execute(
+                select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+            )
+            partner = partner_result.scalars().first()
+            if partner:
+                await create_notification(
+                    db=db,
+                    user_id=partner.id,
+                    title="Computation Uploaded — Review Required",
+                    message=f"A computation has been uploaded by {current_user.full_name} for review.",
+                    related_filing_id=filing_id,
+                )
+    elif current_user.role == UserRole.MANAGER:
+        # Manager uploaded — notify partner
+        partner_result = await db.execute(
+            select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+        )
+        partner = partner_result.scalars().first()
+        if partner:
+            await create_notification(
+                db=db,
+                user_id=partner.id,
+                title="Computation Uploaded — Review Required",
+                message=f"A computation has been uploaded by Manager {current_user.full_name} for review.",
+                related_filing_id=filing_id,
+            )
 
     return ComputationResponse(
         id=computation.id,
@@ -241,6 +290,13 @@ async def get_filing_computations(
             uploaded_by=comp.uploaded_by,
             uploaded_by_name=uploader.full_name if uploader else None,
             uploaded_at=comp.uploaded_at,
+            manager_approved_by=comp.manager_approved_by,
+            manager_approved_at=comp.manager_approved_at,
+            manager_rejected_by=comp.manager_rejected_by,
+            manager_rejected_at=comp.manager_rejected_at,
+            manager_rejection_reason=comp.manager_rejection_reason,
+            partner_approved_by=comp.partner_approved_by,
+            partner_approved_at=comp.partner_approved_at,
             approved_by=comp.approved_by,
             approved_at=comp.approved_at,
             rejected_by=comp.rejected_by,
@@ -249,7 +305,13 @@ async def get_filing_computations(
         )
         items.append(item)
 
-        if comp.status in (ComputationStatus.UPLOADED, ComputationStatus.APPROVED):
+        if comp.status in (
+            ComputationStatus.UPLOADED,
+            ComputationStatus.MANAGER_APPROVED,
+            ComputationStatus.PARTNER_APPROVED,
+            ComputationStatus.CLIENT_APPROVED,
+            ComputationStatus.APPROVED,
+        ):
             if current_version is None:
                 current_version = item
 
@@ -272,8 +334,7 @@ async def approve_computation(
     - Computation is already APPROVED but is_tax_paid is False on the filing:
       allow client to call again just to confirm tax payment.
 
-    Filing does NOT auto-transition to FILING. Partner/Executive must manually
-    advance via the /transition endpoint once both conditions are met.
+    If both computation is approved AND tax is paid, filing auto-transitions to FILING.
     """
     comp_result = await db.execute(
         select(FilingComputation).where(FilingComputation.id == body.computation_id)
@@ -291,7 +352,7 @@ async def approve_computation(
     from datetime import datetime
 
     # ── Scenario B: Computation already approved, client is confirming tax payment ──
-    if computation.status == ComputationStatus.APPROVED:
+    if computation.status == ComputationStatus.CLIENT_APPROVED:
         if filing.is_tax_paid:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -319,7 +380,17 @@ async def approve_computation(
             details={"action": "tax_payment_confirmed"},
         )
 
-        # Notify Partner + Executive that filing is ready to advance
+        # Auto-transition filing to FILING state
+        if filing.status == FilingStatus.COMPUTATION:
+            from app.services.filing_service import transition_filing_status
+            filing = await transition_filing_status(
+                db=db,
+                filing=filing,
+                to_status=FilingStatus.FILING,
+                changed_by=current_user.id,
+            )
+
+        # Notify Partner + Executive that filing has advanced
         partner_result = await db.execute(
             select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
         )
@@ -328,9 +399,9 @@ async def approve_computation(
             await create_notification(
                 db=db,
                 user_id=partner.id,
-                title="Tax Payment Confirmed",
+                title="Tax Payment Confirmed — Filing Advanced",
                 message=f"Tax payment confirmed by {current_user.full_name} for {filing.financial_year}. "
-                        f"Filing is ready to advance to FILING state.",
+                        f"Filing has automatically advanced to FILING state.",
                 related_filing_id=filing.id,
                 related_client_id=current_user.id,
             )
@@ -339,19 +410,20 @@ async def approve_computation(
             await create_notification(
                 db=db,
                 user_id=filing.assigned_executive_id,
-                title="Tax Payment Confirmed",
+                title="Tax Payment Confirmed — Filing Advanced",
                 message=f"Tax payment confirmed by {current_user.full_name} for {filing.financial_year}. "
-                        f"Filing is ready to advance to FILING state.",
+                        f"Filing has automatically advanced to FILING state.",
                 related_filing_id=filing.id,
                 related_client_id=current_user.id,
             )
 
         return {
-            "message": "Tax payment confirmed. Partner/Executive can now advance the filing to FILING state.",
+            "message": "Tax payment confirmed. Filing has automatically advanced to FILING state.",
             "is_tax_paid": True,
+            "filing_status": filing.status.value,
         }
 
-    # ── Scenario A: Normal approval flow (computation is UPLOADED) ──
+    # ── Scenario A: Normal approval flow (computation is PARTNER_APPROVED) ──
 
     # Validate filing is in COMPUTATION state
     if filing.status != FilingStatus.COMPUTATION:
@@ -361,30 +433,16 @@ async def approve_computation(
                    f"The computation can only be approved when the filing is in COMPUTATION state.",
         )
 
-    # Validate computation is in UPLOADED status (not already APPROVED or SUPERSEDED)
-    if computation.status != ComputationStatus.UPLOADED:
+    # Validate computation is in PARTNER_APPROVED status (internal approvals done)
+    if computation.status != ComputationStatus.PARTNER_APPROVED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot approve computation: Computation is in '{computation.status.value}' status. "
-                   f"Only computations with 'UPLOADED' status can be approved.",
+                   f"Only computations with 'PARTNER_APPROVED' status can be approved by client.",
         )
 
-    # Verify there is at least one active (UPLOADED) computation
-    active_comps_result = await db.execute(
-        select(func.count()).select_from(FilingComputation).where(
-            FilingComputation.filing_id == filing.id,
-            FilingComputation.status == ComputationStatus.UPLOADED,
-        )
-    )
-    active_count = active_comps_result.scalar() or 0
-    if active_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="No active computation found to approve. The Executive/Partner must upload a computation first.",
-        )
-
-    # Approve computation
-    computation.status = ComputationStatus.APPROVED
+    # Approve computation (client final approval)
+    computation.status = ComputationStatus.CLIENT_APPROVED
     computation.approved_by = current_user.id
     computation.approved_at = datetime.utcnow()
 
@@ -407,12 +465,22 @@ async def approve_computation(
         details={"is_tax_paid": body.is_tax_paid},
     )
 
+    # Auto-transition filing to FILING state if tax is paid
+    if body.is_tax_paid and filing.status == FilingStatus.COMPUTATION:
+        from app.services.filing_service import transition_filing_status
+        filing = await transition_filing_status(
+            db=db,
+            filing=filing,
+            to_status=FilingStatus.FILING,
+            changed_by=current_user.id,
+        )
+
     # Notify Partner + Executive
     if body.is_tax_paid:
-        notif_title = "Computation Approved & Tax Paid"
+        notif_title = "Computation Approved & Tax Paid — Filing Advanced"
         notif_message = (
             f"Computation approved and tax payment confirmed by {current_user.full_name} "
-            f"for {filing.financial_year}. Filing is ready to advance to FILING state."
+            f"for {filing.financial_year}. Filing has automatically advanced to FILING state."
         )
     else:
         notif_title = "Computation Approved"
@@ -448,13 +516,15 @@ async def approve_computation(
     if body.is_tax_paid:
         return {
             "message": "Computation approved and tax payment confirmed. "
-                       "Partner/Executive can now advance the filing to FILING state.",
+                       "Filing has automatically advanced to FILING state.",
             "is_tax_paid": True,
+            "filing_status": filing.status.value,
         }
     else:
         return {
             "message": "Computation approved. Please confirm tax payment to allow filing to advance.",
             "is_tax_paid": False,
+            "filing_status": filing.status.value,
         }
 
 
@@ -487,12 +557,12 @@ async def reject_computation(
             detail=f"Cannot reject computation: Filing is in '{filing.status.value}' state, not COMPUTATION.",
         )
 
-    # Validate computation is in UPLOADED status
-    if computation.status != ComputationStatus.UPLOADED:
+    # Validate computation is in PARTNER_APPROVED status (client can only reject after partner approved)
+    if computation.status != ComputationStatus.PARTNER_APPROVED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot reject computation: Computation is in '{computation.status.value}' status. "
-                   f"Only computations with 'UPLOADED' status can be rejected.",
+                   f"Only computations with 'PARTNER_APPROVED' status can be rejected by client.",
         )
 
     # Reject computation
@@ -541,6 +611,304 @@ async def reject_computation(
 
     return {
         "message": "Computation rejected. The Executive/Partner can upload a revised computation.",
+        "version_rejected": computation.version,
+    }
+
+
+# ─── POST /computations/manager-approve ─────────────────────
+@router.post("/manager-approve", response_model=dict)
+async def manager_approve_computation(
+    body: ComputationManagerApproveRequest,
+    current_user: User = Depends(get_current_manager_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manager approves computation (first level of internal approval).
+    Moves computation from UPLOADED → MANAGER_APPROVED.
+    After this, Partner must still approve before client sees it.
+    """
+    comp_result = await db.execute(
+        select(FilingComputation).where(FilingComputation.id == body.computation_id)
+    )
+    computation = comp_result.scalar_one_or_none()
+    if not computation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computation not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == computation.filing_id))
+    filing = filing_result.scalar_one_or_none()
+
+    # Validate access — Manager must manage the executive assigned to this filing
+    await enforce_filing_access(db, current_user, filing.client_id)
+
+    if computation.status != ComputationStatus.UPLOADED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot approve: Computation is in '{computation.status.value}' status. "
+                   f"Only 'UPLOADED' computations can be manager-approved.",
+        )
+
+    from datetime import datetime
+    computation.status = ComputationStatus.MANAGER_APPROVED
+    computation.manager_approved_by = current_user.id
+    computation.manager_approved_at = datetime.utcnow()
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.COMPUTATION_MANAGER_APPROVED,
+        actor_id=current_user.id,
+        client_id=filing.client_id,
+        filing_id=filing.id,
+        document_id=computation.id,
+        details={"version": computation.version},
+    )
+
+    # Notify Partner that computation is ready for final approval
+    partner_result = await db.execute(
+        select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+    )
+    partner = partner_result.scalars().first()
+    if partner:
+        await create_notification(
+            db=db,
+            user_id=partner.id,
+            title="Computation Manager-Approved — Partner Review Needed",
+            message=f"Computation (v{computation.version}) approved by Manager {current_user.full_name}. "
+                    f"Please review and approve to send to client.",
+            related_filing_id=filing.id,
+            related_client_id=filing.client_id,
+        )
+
+    return {
+        "message": "Computation approved by manager. Awaiting partner approval before sending to client.",
+        "status": ComputationStatus.MANAGER_APPROVED.value,
+    }
+
+
+# ─── POST /computations/manager-reject ──────────────────────
+@router.post("/manager-reject", response_model=dict)
+async def manager_reject_computation(
+    body: ComputationManagerRejectRequest,
+    current_user: User = Depends(get_current_manager_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manager rejects computation back to executive for revision.
+    Moves computation from UPLOADED → MANAGER_REJECTED.
+    """
+    comp_result = await db.execute(
+        select(FilingComputation).where(FilingComputation.id == body.computation_id)
+    )
+    computation = comp_result.scalar_one_or_none()
+    if not computation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computation not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == computation.filing_id))
+    filing = filing_result.scalar_one_or_none()
+
+    await enforce_filing_access(db, current_user, filing.client_id)
+
+    if computation.status != ComputationStatus.UPLOADED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot reject: Computation is in '{computation.status.value}' status. "
+                   f"Only 'UPLOADED' computations can be manager-rejected.",
+        )
+
+    from datetime import datetime
+    computation.status = ComputationStatus.MANAGER_REJECTED
+    computation.manager_rejected_by = current_user.id
+    computation.manager_rejected_at = datetime.utcnow()
+    computation.manager_rejection_reason = body.reason
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.COMPUTATION_MANAGER_REJECTED,
+        actor_id=current_user.id,
+        client_id=filing.client_id,
+        filing_id=filing.id,
+        document_id=computation.id,
+        details={"version": computation.version, "reason": body.reason},
+    )
+
+    # Notify the executive who uploaded
+    if computation.uploaded_by:
+        await create_notification(
+            db=db,
+            user_id=computation.uploaded_by,
+            title="Computation Rejected by Manager",
+            message=f"Computation (v{computation.version}) rejected by {current_user.full_name}. "
+                    f"Reason: {body.reason}. Please upload a revised computation.",
+            related_filing_id=filing.id,
+            related_client_id=filing.client_id,
+        )
+
+    # Notify partner about the rejection
+    partner_result = await db.execute(
+        select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+    )
+    partner = partner_result.scalars().first()
+    if partner:
+        await create_notification(
+            db=db,
+            user_id=partner.id,
+            title="Computation Rejected by Manager",
+            message=f"Computation (v{computation.version}) for FY {filing.financial_year} rejected by Manager {current_user.full_name}. "
+                    f"Reason: {body.reason}. Executive will upload a revised version.",
+            related_filing_id=filing.id,
+            related_client_id=filing.client_id,
+        )
+
+    return {
+        "message": "Computation rejected by manager. Executive can upload a revised version.",
+        "version_rejected": computation.version,
+    }
+
+
+# ─── POST /computations/partner-approve ─────────────────────
+@router.post("/partner-approve", response_model=dict)
+async def partner_approve_computation(
+    body: ComputationPartnerApproveRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Partner approves computation (final internal approval).
+    Can approve from UPLOADED (bypassing manager) or from MANAGER_APPROVED.
+    After this, computation becomes visible to client for their approval.
+    """
+    if current_user.role != UserRole.PARTNER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Partner access required")
+
+    comp_result = await db.execute(
+        select(FilingComputation).where(FilingComputation.id == body.computation_id)
+    )
+    computation = comp_result.scalar_one_or_none()
+    if not computation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computation not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == computation.filing_id))
+    filing = filing_result.scalar_one_or_none()
+
+    # Partner can approve from UPLOADED (bypass) or MANAGER_APPROVED
+    if computation.status not in (ComputationStatus.UPLOADED, ComputationStatus.MANAGER_APPROVED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot approve: Computation is in '{computation.status.value}' status. "
+                   f"Only 'UPLOADED' or 'MANAGER_APPROVED' computations can be partner-approved.",
+        )
+
+    from datetime import datetime
+    computation.status = ComputationStatus.PARTNER_APPROVED
+    computation.partner_approved_by = current_user.id
+    computation.partner_approved_at = datetime.utcnow()
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.COMPUTATION_PARTNER_APPROVED,
+        actor_id=current_user.id,
+        client_id=filing.client_id,
+        filing_id=filing.id,
+        document_id=computation.id,
+        details={"version": computation.version, "bypassed_manager": computation.manager_approved_by is None},
+    )
+
+    # Notify client that computation is ready for their review
+    await create_notification(
+        db=db,
+        user_id=filing.client_id,
+        title="Computation Ready for Review",
+        message="Your tax computation is ready for review. Please approve or reject it.",
+        related_filing_id=filing.id,
+    )
+
+    return {
+        "message": "Computation approved by partner. Client has been notified to review.",
+        "status": ComputationStatus.PARTNER_APPROVED.value,
+    }
+
+
+# ─── POST /computations/partner-reject ──────────────────────
+@router.post("/partner-reject", response_model=dict)
+async def partner_reject_computation(
+    body: ComputationPartnerRejectRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Partner rejects computation back for revision.
+    Can reject from UPLOADED (bypassing manager) or MANAGER_APPROVED.
+    Notifies both the manager and the executive who uploaded.
+    """
+    if current_user.role != UserRole.PARTNER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Partner access required")
+
+    comp_result = await db.execute(
+        select(FilingComputation).where(FilingComputation.id == body.computation_id)
+    )
+    computation = comp_result.scalar_one_or_none()
+    if not computation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computation not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == computation.filing_id))
+    filing = filing_result.scalar_one_or_none()
+
+    if computation.status not in (ComputationStatus.UPLOADED, ComputationStatus.MANAGER_APPROVED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot reject: Computation is in '{computation.status.value}' status. "
+                   f"Only 'UPLOADED' or 'MANAGER_APPROVED' computations can be partner-rejected.",
+        )
+
+    from datetime import datetime
+    computation.status = ComputationStatus.REJECTED
+    computation.rejected_by = current_user.id
+    computation.rejected_at = datetime.utcnow()
+    computation.rejection_reason = body.reason
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.COMPUTATION_REJECTED,
+        actor_id=current_user.id,
+        client_id=filing.client_id,
+        filing_id=filing.id,
+        document_id=computation.id,
+        details={"version": computation.version, "reason": body.reason, "rejected_by_role": "PARTNER"},
+    )
+
+    # Notify the executive who uploaded
+    if computation.uploaded_by:
+        await create_notification(
+            db=db,
+            user_id=computation.uploaded_by,
+            title="Computation Rejected by Partner",
+            message=f"Computation (v{computation.version}) for FY {filing.financial_year} rejected by Partner. "
+                    f"Reason: {body.reason}. Please upload a revised computation.",
+            related_filing_id=filing.id,
+            related_client_id=filing.client_id,
+        )
+
+    # Notify the manager (if executive is under a manager)
+    if filing.assigned_executive_id:
+        mgr_result = await db.execute(
+            select(ManagerExecutiveAssignment.manager_id).where(
+                ManagerExecutiveAssignment.executive_id == filing.assigned_executive_id,
+                ManagerExecutiveAssignment.is_active == True,
+            )
+        )
+        mgr_row = mgr_result.first()
+        if mgr_row:
+            await create_notification(
+                db=db,
+                user_id=mgr_row[0],
+                title="Computation Rejected by Partner",
+                message=f"Computation (v{computation.version}) for FY {filing.financial_year} rejected by Partner. "
+                        f"Reason: {body.reason}. Executive needs to upload a revised version.",
+                related_filing_id=filing.id,
+                related_client_id=filing.client_id,
+            )
+
+    return {
+        "message": "Computation rejected by partner. Executive and manager have been notified.",
         "version_rejected": computation.version,
     }
 

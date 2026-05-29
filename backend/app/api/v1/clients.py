@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_executive_or_partner, get_current_partner, get_current_user, hash_password
+from app.core.security import get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_partner, get_current_user, hash_password
 from app.database import get_db
 from app.enums import AccountStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -58,10 +58,10 @@ async def register_new_client(
 async def activate_client_account(
     body: ClientActivationRequest,
     request: Request,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Activate a client account (Partner or Executive)."""
+    """Activate a client account (Partner, Manager, or Executive)."""
     client = await activate_client(
         db=db,
         client_id=body.client_id,
@@ -76,10 +76,10 @@ async def activate_client_account(
 async def reject_client_account(
     body: ClientRejectionRequest,
     request: Request,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Reject a client registration (Partner or Executive)."""
+    """Reject a client registration (Partner, Manager, or Executive)."""
     client = await reject_client(
         db=db,
         client_id=body.client_id,
@@ -104,6 +104,7 @@ async def list_clients(
     """
     List clients with search and filtering.
     - Partner: sees all clients
+    - Manager: sees clients of their team's executives
     - Executive: sees only assigned clients
     - Client: not permitted
     """
@@ -114,8 +115,18 @@ async def list_clients(
     # Base query
     query = select(User).where(User.role == UserRole.CLIENT)
 
+    # Manager scope: clients directly assigned to this manager
+    if current_user.role == UserRole.MANAGER:
+        from app.models.manager_client_assignment import ManagerClientAssignment
+        query = query.join(
+            ManagerClientAssignment,
+            (ManagerClientAssignment.client_id == User.id)
+            & (ManagerClientAssignment.manager_id == current_user.id)
+            & (ManagerClientAssignment.is_active == True),
+        )
+
     # Executive scope: only assigned clients
-    if current_user.role == UserRole.EXECUTIVE:
+    elif current_user.role == UserRole.EXECUTIVE:
         query = query.join(
             ExecutiveClientAssignment,
             (ExecutiveClientAssignment.client_id == User.id)

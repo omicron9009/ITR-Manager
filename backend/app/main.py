@@ -145,6 +145,9 @@ async def _create_tables():
 
         # Migrate renamed enum values in existing data
         await _migrate_renamed_enum_values()
+
+        # Remove deprecated MANAGER tags from the database
+        await _cleanup_manager_tags()
     except Exception as e:
         logger.warning(f"Table creation skipped: {e}")
 
@@ -235,6 +238,15 @@ async def _sync_new_columns():
         ("filing_computations", "rejected_by", "UUID", None),
         ("filing_computations", "rejected_at", "TIMESTAMPTZ", None),
         ("filing_computations", "rejection_reason", "TEXT", None),
+        # Manager approval fields on filing_computations table
+        ("filing_computations", "manager_approved_by", "UUID", None),
+        ("filing_computations", "manager_approved_at", "TIMESTAMPTZ", None),
+        ("filing_computations", "manager_rejected_by", "UUID", None),
+        ("filing_computations", "manager_rejected_at", "TIMESTAMPTZ", None),
+        ("filing_computations", "manager_rejection_reason", "TEXT", None),
+        # Partner approval fields on filing_computations table
+        ("filing_computations", "partner_approved_by", "UUID", None),
+        ("filing_computations", "partner_approved_at", "TIMESTAMPTZ", None),
         # Recovery codes flag on users table
         ("users", "recovery_codes_issued", "BOOLEAN NOT NULL", "'false'"),
         # Tax payment confirmation on itr_filings table
@@ -268,24 +280,32 @@ async def _sync_new_columns():
                     )
                     logger.info(f"Added column '{column}' ({col_type}) to table '{table}'")
 
-            # Add FK constraint for rejected_by if not present
-            fk_exists = await conn.fetchval(
-                "SELECT 1 FROM information_schema.table_constraints "
-                "WHERE constraint_name = 'fk_filing_computations_rejected_by' "
-                "AND table_name = 'filing_computations'"
-            )
-            if not fk_exists:
-                col_exists = await conn.fetchval(
-                    "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_name = 'filing_computations' AND column_name = 'rejected_by'"
+            # Add FK constraints for user reference columns if not present
+            fk_constraints = [
+                ("fk_filing_computations_rejected_by", "rejected_by"),
+                ("fk_filing_computations_manager_approved_by", "manager_approved_by"),
+                ("fk_filing_computations_manager_rejected_by", "manager_rejected_by"),
+                ("fk_filing_computations_partner_approved_by", "partner_approved_by"),
+            ]
+            for constraint_name, col_name in fk_constraints:
+                fk_exists = await conn.fetchval(
+                    "SELECT 1 FROM information_schema.table_constraints "
+                    "WHERE constraint_name = $1 AND table_name = 'filing_computations'",
+                    constraint_name,
                 )
-                if col_exists:
-                    await conn.execute(
-                        'ALTER TABLE "filing_computations" '
-                        'ADD CONSTRAINT "fk_filing_computations_rejected_by" '
-                        'FOREIGN KEY ("rejected_by") REFERENCES "users"("id") ON DELETE SET NULL'
+                if not fk_exists:
+                    col_exists = await conn.fetchval(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'filing_computations' AND column_name = $1",
+                        col_name,
                     )
-                    logger.info("Added FK constraint 'fk_filing_computations_rejected_by'")
+                    if col_exists:
+                        await conn.execute(
+                            f'ALTER TABLE "filing_computations" '
+                            f'ADD CONSTRAINT "{constraint_name}" '
+                            f'FOREIGN KEY ("{col_name}") REFERENCES "users"("id") ON DELETE SET NULL'
+                        )
+                        logger.info(f"Added FK constraint '{constraint_name}'")
         finally:
             await conn.close()
 
@@ -307,6 +327,8 @@ async def _migrate_renamed_enum_values():
         ("itr_filings", "status", "ON_BOARDING", "DOCUMENT_UPLOAD"),
         ("filing_state_history", "from_status", "ON_BOARDING", "DOCUMENT_UPLOAD"),
         ("filing_state_history", "to_status", "ON_BOARDING", "DOCUMENT_UPLOAD"),
+        # Computation status: APPROVED → CLIENT_APPROVED (two-step approval flow)
+        ("filing_computations", "status", "APPROVED", "CLIENT_APPROVED"),
     ]
 
     try:
@@ -343,6 +365,45 @@ async def _migrate_renamed_enum_values():
         logger.info("Enum value migration complete.")
     except Exception as e:
         logger.warning(f"Enum value migration failed: {e}")
+
+
+async def _cleanup_manager_tags():
+    """Remove deprecated MANAGER-type tags and their executive_tag assignments.
+
+    The MANAGER tag_type has been replaced by the real Manager role.
+    Existing rows with tag_type='MANAGER' in the database will crash SQLAlchemy
+    because the Python TagType enum no longer contains 'MANAGER'.
+    This cleans them up using raw SQL (bypassing the ORM enum check).
+    """
+    import asyncpg
+
+    try:
+        conn = await asyncpg.connect(
+            host=settings.POSTGRES_HOST,
+            port=settings.POSTGRES_PORT,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            database=settings.POSTGRES_DB,
+        )
+
+        try:
+            # Delete executive_tags that reference MANAGER-type tags
+            deleted_et = await conn.execute(
+                "DELETE FROM executive_tags WHERE tag_id IN "
+                "(SELECT id FROM tags WHERE tag_type = 'MANAGER')"
+            )
+            # Delete the MANAGER tags themselves
+            deleted_tags = await conn.execute(
+                "DELETE FROM tags WHERE tag_type = 'MANAGER'"
+            )
+            if "DELETE" in (deleted_et or "") or "DELETE" in (deleted_tags or ""):
+                logger.info(
+                    f"Cleaned up MANAGER tags: {deleted_et}, {deleted_tags}"
+                )
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.warning(f"MANAGER tag cleanup failed: {e}")
 
 
 async def _seed_admin_user():

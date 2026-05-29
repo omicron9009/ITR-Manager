@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.enums import FilingStatus, TagType, UserRole
 from app.models.executive_tag import ExecutiveTag
 from app.models.filing import ITRFiling
+from app.models.manager_client_assignment import ManagerClientAssignment
+from app.models.manager_executive_assignment import ManagerExecutiveAssignment
 from app.models.tag import Tag
 from app.models.user import User
 
@@ -259,28 +261,29 @@ async def _build_fy_wise(db: AsyncSession, financial_year: Optional[str]) -> lis
 
 
 async def _build_manager_distribution(db: AsyncSession, financial_year: Optional[str]) -> list[dict]:
-    """Build manager-wise distribution with executive breakdown."""
-    tags_result = await db.execute(
-        select(Tag).where(Tag.tag_type == TagType.MANAGER, Tag.is_active == True).order_by(Tag.name)
+    """Build manager-wise distribution using real Manager role assignments."""
+    mgr_result = await db.execute(
+        select(User).where(User.role == UserRole.MANAGER, User.is_active == True).order_by(User.full_name)
     )
-    manager_tags = tags_result.scalars().all()
+    managers = mgr_result.scalars().all()
 
     fy_filter = [ITRFiling.financial_year == financial_year] if financial_year else []
     items = []
 
-    for tag in manager_tags:
-        # Get executive IDs for this manager tag
+    for mgr in managers:
+        # Get executive IDs for this manager
         et_result = await db.execute(
-            select(ExecutiveTag.executive_id).where(
-                ExecutiveTag.tag_id == tag.id, ExecutiveTag.is_active == True
+            select(ManagerExecutiveAssignment.executive_id).where(
+                ManagerExecutiveAssignment.manager_id == mgr.id,
+                ManagerExecutiveAssignment.is_active == True,
             )
         )
         exec_ids = [row[0] for row in et_result.all()]
 
         if not exec_ids:
             items.append({
-                "tag_id": tag.id,
-                "manager_name": tag.name,
+                "manager_id": mgr.id,
+                "manager_name": mgr.full_name,
                 "executive_count": 0,
                 "total_filings": 0,
                 "active_filings": 0,
@@ -319,8 +322,8 @@ async def _build_manager_distribution(db: AsyncSession, financial_year: Optional
             })
 
         items.append({
-            "tag_id": tag.id,
-            "manager_name": tag.name,
+            "manager_id": mgr.id,
+            "manager_name": mgr.full_name,
             "executive_count": len(exec_ids),
             "total_filings": stats["total"],
             "active_filings": stats["active"],
@@ -334,7 +337,7 @@ async def _build_manager_distribution(db: AsyncSession, financial_year: Optional
 
 
 async def _build_location_distribution(db: AsyncSession, financial_year: Optional[str]) -> list[dict]:
-    """Build location distribution with hierarchy (Location → Managers → Executives)."""
+    """Build location distribution with executives breakdown."""
     loc_result = await db.execute(
         select(Tag).where(Tag.tag_type == TagType.LOCATION, Tag.is_active == True).order_by(Tag.name)
     )
@@ -357,13 +360,12 @@ async def _build_location_distribution(db: AsyncSession, financial_year: Optiona
                 "tag_id": loc_tag.id,
                 "location_name": loc_tag.name,
                 "executive_count": 0,
-                "manager_count": 0,
                 "total_filings": 0,
                 "active_filings": 0,
                 "completed_filings": 0,
                 "halted_filings": 0,
                 "avg_days_to_complete": None,
-                "hierarchy": [],
+                "executives": [],
             })
             continue
 
@@ -373,76 +375,37 @@ async def _build_location_distribution(db: AsyncSession, financial_year: Optiona
             db, [ITRFiling.assigned_executive_id.in_(loc_exec_ids)] + fy_filter
         )
 
-        # Find manager tags for executives in this location
-        mgr_tags_result = await db.execute(
-            select(Tag).where(
-                Tag.tag_type == TagType.MANAGER,
-                Tag.is_active == True,
-                Tag.id.in_(
-                    select(ExecutiveTag.tag_id).where(
-                        ExecutiveTag.executive_id.in_(loc_exec_ids),
-                        ExecutiveTag.is_active == True,
-                        ExecutiveTag.tag_id.in_(
-                            select(Tag.id).where(Tag.tag_type == TagType.MANAGER)
-                        ),
-                    )
-                ),
-            ).order_by(Tag.name)
-        )
-        mgr_tags = mgr_tags_result.scalars().all()
-
-        hierarchy = []
-        for mgr_tag in mgr_tags:
-            # Executives with BOTH this location AND this manager
-            mgr_exec_result = await db.execute(
-                select(ExecutiveTag.executive_id).where(
-                    ExecutiveTag.tag_id == mgr_tag.id,
-                    ExecutiveTag.is_active == True,
-                    ExecutiveTag.executive_id.in_(loc_exec_ids),
-                )
+        # Per-executive breakdown
+        executives = []
+        for eid in loc_exec_ids:
+            user_result = await db.execute(select(User).where(User.id == eid))
+            user = user_result.scalar_one_or_none()
+            if not user:
+                continue
+            e_stats = await _filing_stats_for_ids(db, [eid], financial_year)
+            e_avg = await _avg_completion_days(
+                db, [ITRFiling.assigned_executive_id == eid] + fy_filter
             )
-            mgr_exec_ids = [row[0] for row in mgr_exec_result.all()]
-
-            mgr_executives = []
-            for eid in mgr_exec_ids:
-                user_result = await db.execute(select(User).where(User.id == eid))
-                user = user_result.scalar_one_or_none()
-                if not user:
-                    continue
-                e_stats = await _filing_stats_for_ids(db, [eid], financial_year)
-                e_avg = await _avg_completion_days(
-                    db, [ITRFiling.assigned_executive_id == eid] + fy_filter
-                )
-                mgr_executives.append({
-                    "executive_id": user.id,
-                    "executive_name": user.full_name,
-                    "total_filings": e_stats["total"],
-                    "active_filings": e_stats["active"],
-                    "completed_filings": e_stats["completed"],
-                    "halted_filings": e_stats["halted"],
-                    "avg_days_to_complete": e_avg,
-                })
-
-            mgr_stats = await _filing_stats_for_ids(db, mgr_exec_ids, financial_year) if mgr_exec_ids else {"total": 0, "completed": 0}
-            hierarchy.append({
-                "tag_id": mgr_tag.id,
-                "manager_name": mgr_tag.name,
-                "executives": mgr_executives,
-                "total_filings": mgr_stats["total"],
-                "completed_filings": mgr_stats["completed"],
+            executives.append({
+                "executive_id": user.id,
+                "executive_name": user.full_name,
+                "total_filings": e_stats["total"],
+                "active_filings": e_stats["active"],
+                "completed_filings": e_stats["completed"],
+                "halted_filings": e_stats["halted"],
+                "avg_days_to_complete": e_avg,
             })
 
         items.append({
             "tag_id": loc_tag.id,
             "location_name": loc_tag.name,
             "executive_count": len(loc_exec_ids),
-            "manager_count": len(mgr_tags),
             "total_filings": stats["total"],
             "active_filings": stats["active"],
             "completed_filings": stats["completed"],
             "halted_filings": stats["halted"],
             "avg_days_to_complete": avg_days,
-            "hierarchy": hierarchy,
+            "executives": executives,
         })
 
     return items
@@ -474,7 +437,6 @@ async def _build_pending_report(db: AsyncSession, fy_filter: list) -> list[dict]
             exec_name = e_result.scalar()
 
         # Tags for assigned executive
-        manager_tag_name = None
         location_tag_name = None
         if f.assigned_executive_id:
             tag_result = await db.execute(
@@ -485,10 +447,24 @@ async def _build_pending_report(db: AsyncSession, fy_filter: list) -> list[dict]
                 )
             )
             for tag_name, tag_type in tag_result.all():
-                if tag_type == TagType.MANAGER and not manager_tag_name:
-                    manager_tag_name = tag_name
-                elif tag_type == TagType.LOCATION and not location_tag_name:
+                if tag_type == TagType.LOCATION and not location_tag_name:
                     location_tag_name = tag_name
+
+        # Get manager name from real assignment
+        manager_name = None
+        if f.assigned_executive_id:
+            mgr_assign_result = await db.execute(
+                select(User.full_name).join(
+                    ManagerExecutiveAssignment,
+                    ManagerExecutiveAssignment.manager_id == User.id,
+                ).where(
+                    ManagerExecutiveAssignment.executive_id == f.assigned_executive_id,
+                    ManagerExecutiveAssignment.is_active == True,
+                )
+            )
+            mgr_row = mgr_assign_result.first()
+            if mgr_row:
+                manager_name = mgr_row[0]
 
         days_pending = (now - f.initiated_at.replace(tzinfo=timezone.utc)).total_seconds() / 86400
 
@@ -500,7 +476,7 @@ async def _build_pending_report(db: AsyncSession, fy_filter: list) -> list[dict]
             "financial_year": f.financial_year,
             "status": f.status.value,
             "assigned_executive_name": exec_name,
-            "manager_tag": manager_tag_name,
+            "manager_name": manager_name,
             "location_tag": location_tag_name,
             "days_pending": round(days_pending, 1),
             "initiated_at": f.initiated_at,
@@ -555,27 +531,28 @@ async def _build_executive_leaderboard(db: AsyncSession, fy_filter: list) -> lis
 
 
 async def _build_manager_leaderboard(db: AsyncSession, financial_year: Optional[str]) -> list[dict]:
-    """Build manager leaderboard ranked by completed filings."""
-    tags_result = await db.execute(
-        select(Tag).where(Tag.tag_type == TagType.MANAGER, Tag.is_active == True)
+    """Build manager leaderboard using real Manager role assignments."""
+    mgr_result = await db.execute(
+        select(User).where(User.role == UserRole.MANAGER, User.is_active == True)
     )
-    manager_tags = tags_result.scalars().all()
+    managers = mgr_result.scalars().all()
 
     fy_filter = [ITRFiling.financial_year == financial_year] if financial_year else []
     leaderboard = []
 
-    for tag in manager_tags:
+    for mgr in managers:
         et_result = await db.execute(
-            select(ExecutiveTag.executive_id).where(
-                ExecutiveTag.tag_id == tag.id, ExecutiveTag.is_active == True
+            select(ManagerExecutiveAssignment.executive_id).where(
+                ManagerExecutiveAssignment.manager_id == mgr.id,
+                ManagerExecutiveAssignment.is_active == True,
             )
         )
         exec_ids = [row[0] for row in et_result.all()]
 
         if not exec_ids:
             leaderboard.append({
-                "tag_id": tag.id,
-                "manager_name": tag.name,
+                "manager_id": mgr.id,
+                "manager_name": mgr.full_name,
                 "executive_count": 0,
                 "completed_filings": 0,
                 "total_filings": 0,
@@ -589,8 +566,8 @@ async def _build_manager_leaderboard(db: AsyncSession, financial_year: Optional[
         )
 
         leaderboard.append({
-            "tag_id": tag.id,
-            "manager_name": tag.name,
+            "manager_id": mgr.id,
+            "manager_name": mgr.full_name,
             "executive_count": len(exec_ids),
             "completed_filings": stats["completed"],
             "total_filings": stats["total"],
@@ -751,7 +728,7 @@ async def generate_excel_report(db: AsyncSession, financial_year: Optional[str] 
         ws5.cell(row=row_idx, column=3, value=p["financial_year"])
         ws5.cell(row=row_idx, column=4, value=p["status"])
         ws5.cell(row=row_idx, column=5, value=p["assigned_executive_name"] or "Unassigned")
-        ws5.cell(row=row_idx, column=6, value=p["manager_tag"] or "N/A")
+        ws5.cell(row=row_idx, column=6, value=p["manager_name"] or "N/A")
         ws5.cell(row=row_idx, column=7, value=p["location_tag"] or "N/A")
         ws5.cell(row=row_idx, column=8, value=p["days_pending"])
         ws5.cell(row=row_idx, column=9, value=p["initiated_at"].strftime("%Y-%m-%d") if p["initiated_at"] else "")

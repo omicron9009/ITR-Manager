@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_executive, get_current_partner, get_current_user
+from app.core.security import get_current_executive, get_current_manager_or_partner, get_current_partner, get_current_user
 from app.database import get_db
 from app.enums import TagType, UserRole
 from app.models.user import User
@@ -16,14 +16,9 @@ from app.schemas.tag import (
     ExecutiveTagResponse,
     ExecutiveTagsListResponse,
     ExecutiveTagsView,
-    HierarchyLocationItem,
-    HierarchyResponse,
     LocationDetailResponse,
     LocationSummaryItem,
     LocationSummaryResponse,
-    ManagerDetailResponse,
-    ManagerSummaryItem,
-    ManagerSummaryResponse,
     TagBrief,
     TagCreateRequest,
     TagListResponse,
@@ -37,11 +32,8 @@ from app.services.tag_service import (
     deactivate_tag,
     get_all_executives_with_tags,
     get_executive_tags,
-    get_hierarchy_summary,
     get_location_detail,
     get_location_summary,
-    get_manager_detail,
-    get_manager_summary,
     get_tag_executive_count,
     list_tags,
     remove_tag_from_executive,
@@ -153,10 +145,10 @@ async def delete_tag(
 @router.post("/assign", response_model=ExecutiveTagResponse)
 async def assign_tag(
     body: ExecutiveTagAssignRequest,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign a tag to an executive. Partner only."""
+    """Assign a tag to an executive. Manager/Partner."""
     assignment = await assign_tag_to_executive(
         db=db,
         executive_id=body.executive_id,
@@ -187,10 +179,10 @@ async def assign_tag(
 @router.post("/bulk-assign", response_model=dict)
 async def bulk_assign_tag_endpoint(
     body: ExecutiveTagBulkAssignRequest,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign a tag to multiple executives at once. Partner only."""
+    """Assign a tag to multiple executives at once. Manager/Partner."""
     assignments = await bulk_assign_tag(
         db=db,
         executive_ids=body.executive_ids,
@@ -208,10 +200,10 @@ async def bulk_assign_tag_endpoint(
 async def unassign_tag(
     executive_id: UUID,
     tag_id: UUID,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove a tag from an executive. Partner only."""
+    """Remove a tag from an executive. Manager/Partner."""
     await remove_tag_from_executive(db, executive_id, tag_id)
     return {"message": "Tag removed from executive"}
 
@@ -227,7 +219,6 @@ async def list_executives_with_tags(
         ExecutiveTagsView(
             executive_id=item["executive_id"],
             executive_name=item["executive_name"],
-            manager_tags=[TagBrief(**t) for t in item["manager_tags"]],
             location_tags=[TagBrief(**t) for t in item["location_tags"]],
         )
         for item in items_data
@@ -255,7 +246,6 @@ async def get_executive_tags_endpoint(
     return ExecutiveTagsView(
         executive_id=executive.id,
         executive_name=executive.full_name,
-        manager_tags=[TagBrief(**t) for t in tags_data["manager_tags"]],
         location_tags=[TagBrief(**t) for t in tags_data["location_tags"]],
     )
 
@@ -280,7 +270,6 @@ async def get_my_tags(
         return ExecutiveTagsView(
             executive_id=current_user.id,
             executive_name=current_user.full_name,
-            manager_tags=[],
             location_tags=[],
         )
 
@@ -288,7 +277,6 @@ async def get_my_tags(
     return ExecutiveTagsView(
         executive_id=current_user.id,
         executive_name=current_user.full_name,
-        manager_tags=[TagBrief(**t) for t in tags_data["manager_tags"]],
         location_tags=[TagBrief(**t) for t in tags_data["location_tags"]],
     )
 
@@ -298,48 +286,15 @@ async def get_my_tags(
 # ═══════════════════════════════════════════════════════════════
 
 
-@router.get("/summary/manager", response_model=ManagerSummaryResponse)
-async def manager_summary(
-    current_user: User = Depends(get_current_partner),
-    db: AsyncSession = Depends(get_db),
-):
-    """Per-manager summary: executive count, filing stats. Partner only."""
-    data = await get_manager_summary(db)
-    items = [ManagerSummaryItem(**item) for item in data]
-    return ManagerSummaryResponse(items=items, total=len(items))
-
-
 @router.get("/summary/location", response_model=LocationSummaryResponse)
 async def location_summary(
     current_user: User = Depends(get_current_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Per-location summary: executive count, manager count, filing stats. Partner only."""
+    """Per-location summary: executive count, filing stats. Partner only."""
     data = await get_location_summary(db)
     items = [LocationSummaryItem(**item) for item in data]
     return LocationSummaryResponse(items=items, total=len(items))
-
-
-@router.get("/summary/hierarchy", response_model=HierarchyResponse)
-async def hierarchy_summary(
-    current_user: User = Depends(get_current_partner),
-    db: AsyncSession = Depends(get_db),
-):
-    """Full hierarchy: Location → Managers → Executives → filing stats. Partner only."""
-    data = await get_hierarchy_summary(db)
-    items = [HierarchyLocationItem(**item) for item in data]
-    return HierarchyResponse(items=items, total=len(items))
-
-
-@router.get("/summary/manager/{tag_id}", response_model=ManagerDetailResponse)
-async def manager_detail(
-    tag_id: UUID,
-    current_user: User = Depends(get_current_partner),
-    db: AsyncSession = Depends(get_db),
-):
-    """Detailed view for one manager: executives, filings, status breakdown. Partner only."""
-    data = await get_manager_detail(db, tag_id)
-    return ManagerDetailResponse(**data)
 
 
 @router.get("/summary/location/{tag_id}", response_model=LocationDetailResponse)
@@ -348,6 +303,6 @@ async def location_detail(
     current_user: User = Depends(get_current_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Detailed view for one location: executives, managers, filings. Partner only."""
+    """Detailed view for one location: executives, filings. Partner only."""
     data = await get_location_detail(db, tag_id)
     return LocationDetailResponse(**data)

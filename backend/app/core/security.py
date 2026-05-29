@@ -127,6 +127,30 @@ async def get_current_executive_or_partner(
     return current_user
 
 
+async def get_current_manager_or_partner(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Ensure the current user is either Manager or Partner."""
+    if current_user.role not in (UserRole.MANAGER, UserRole.PARTNER):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Manager or Partner access required",
+        )
+    return current_user
+
+
+async def get_current_manager_executive_or_partner(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Ensure the current user is Manager, Executive, or Partner."""
+    if current_user.role not in (UserRole.MANAGER, UserRole.EXECUTIVE, UserRole.PARTNER):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Manager, Executive, or Partner access required",
+        )
+    return current_user
+
+
 async def get_current_dashboard_user_or_partner(
     current_user: User = Depends(get_current_user),
 ) -> User:

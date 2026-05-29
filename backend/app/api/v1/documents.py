@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.file_validation import validate_file_size, validate_file_type
 from app.core.permissions import enforce_filing_access
-from app.core.security import get_current_executive_or_partner, get_current_partner, get_current_user
+from app.core.security import get_current_executive_or_partner, get_current_manager_or_partner, get_current_partner, get_current_user
 from app.database import get_db
 from app.enums import AuditEventType, DocumentStatus, FilingStatus, UserRole
 from app.models.filing import ITRFiling
@@ -74,10 +74,10 @@ async def list_document_types(
 @router.post("/types", response_model=MasterDocTypeResponse, status_code=201)
 async def create_document_type(
     body: MasterDocTypeCreateRequest,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Add a new document type to the master list (Partner only)."""
+    """Add a new document type to the master list (Manager/Partner)."""
     doc_type = MasterDocumentType(
         name=body.name,
         description=body.description,
@@ -101,10 +101,10 @@ async def create_document_type(
 async def update_document_type(
     type_id: UUID,
     body: MasterDocTypeUpdateRequest,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a document type (Partner only)."""
+    """Update a document type (Manager/Partner)."""
     result = await db.execute(select(MasterDocumentType).where(MasterDocumentType.id == type_id))
     doc_type = result.scalar_one_or_none()
     if not doc_type:
@@ -158,14 +158,41 @@ async def assign_documents_to_filing(
             detail=f"Cannot assign documents when filing is in {filing.status.value} state",
         )
 
-    # Check executive is assigned before moving to DOCUMENT_UPLOAD
+    # Check manager and executive are assigned before moving to DOCUMENT_UPLOAD
     if filing.status == FilingStatus.INITIATED:
-        if not filing.assigned_executive_id:
+        from app.models.manager_client_assignment import ManagerClientAssignment
+        from app.models.executive_assignment import ExecutiveClientAssignment
+
+        mgr_result = await db.execute(
+            select(ManagerClientAssignment).where(
+                ManagerClientAssignment.client_id == filing.client_id,
+                ManagerClientAssignment.is_active == True,
+            )
+        )
+        if not mgr_result.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="An Executive must be assigned to this client before document placeholders can be assigned. "
+                detail="A Manager must be assigned to this client before the filing can progress. "
+                       "Partner must assign the client to a manager via POST /managers/{id}/clients.",
+            )
+
+        exec_result = await db.execute(
+            select(ExecutiveClientAssignment).where(
+                ExecutiveClientAssignment.client_id == filing.client_id,
+                ExecutiveClientAssignment.is_active == True,
+            )
+        )
+        exec_assignment = exec_result.scalar_one_or_none()
+        if not exec_assignment:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="An Executive must be assigned to this client before the filing can progress. "
                        "Please assign an Executive first via the Executive Management page.",
             )
+
+        # Set assigned_executive on the filing if not already set
+        if not filing.assigned_executive_id:
+            filing.assigned_executive_id = exec_assignment.executive_id
 
     placeholders = await assign_document_placeholders(
         db=db,

@@ -12,6 +12,7 @@ from app.api.v1 import (
     email,
     executives,
     filings,
+    managers,
     notifications,
     onboarding,
     audit,
@@ -25,6 +26,7 @@ api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 api_router.include_router(clients.router, prefix="/clients", tags=["Clients"])
 api_router.include_router(executives.router, prefix="/executives", tags=["Executives"])
+api_router.include_router(managers.router, prefix="/managers", tags=["Managers"])
 api_router.include_router(filings.router, prefix="/filings", tags=["Filings"])
 api_router.include_router(documents.router, prefix="/documents", tags=["Documents"])
 api_router.include_router(computations.router, prefix="/computations", tags=["Computations"])

@@ -76,7 +76,6 @@ class TagBrief(BaseModel):
 class ExecutiveTagsView(BaseModel):
     executive_id: UUID
     executive_name: str
-    manager_tags: list[TagBrief]
     location_tags: list[TagBrief]
 
 
@@ -95,27 +94,10 @@ class ExecutiveBrief(BaseModel):
     total_filings: int = 0
 
 
-class ManagerSummaryItem(BaseModel):
-    tag_id: UUID
-    manager_name: str
-    executive_count: int = 0
-    total_filings: int = 0
-    active_filings: int = 0
-    completed_filings: int = 0
-    halted_filings: int = 0
-    executives: list[ExecutiveBrief] = []
-
-
-class ManagerSummaryResponse(BaseModel):
-    items: list[ManagerSummaryItem]
-    total: int
-
-
 class LocationSummaryItem(BaseModel):
     tag_id: UUID
     location_name: str
     executive_count: int = 0
-    manager_count: int = 0
     total_filings: int = 0
     active_filings: int = 0
     completed_filings: int = 0
@@ -124,30 +106,6 @@ class LocationSummaryItem(BaseModel):
 
 class LocationSummaryResponse(BaseModel):
     items: list[LocationSummaryItem]
-    total: int
-
-
-# ─── Hierarchy: Location → Managers → Executives ────────────
-
-class HierarchyManagerItem(BaseModel):
-    tag_id: UUID
-    manager_name: str
-    executives: list[ExecutiveBrief] = []
-    total_filings: int = 0
-    completed_filings: int = 0
-
-
-class HierarchyLocationItem(BaseModel):
-    tag_id: UUID
-    location_name: str
-    managers: list[HierarchyManagerItem] = []
-    total_executives: int = 0
-    total_filings: int = 0
-    completed_filings: int = 0
-
-
-class HierarchyResponse(BaseModel):
-    items: list[HierarchyLocationItem]
     total: int
 
 
@@ -161,23 +119,10 @@ class FilingBriefItem(BaseModel):
     last_updated: datetime
 
 
-class ManagerDetailResponse(BaseModel):
-    tag_id: UUID
-    manager_name: str
-    executive_count: int = 0
-    total_filings: int = 0
-    active_filings: int = 0
-    completed_filings: int = 0
-    halted_filings: int = 0
-    executives: list[ExecutiveBrief] = []
-    recent_filings: list[FilingBriefItem] = []
-
-
 class LocationDetailResponse(BaseModel):
     tag_id: UUID
     location_name: str
     executive_count: int = 0
-    manager_count: int = 0
     total_filings: int = 0
     active_filings: int = 0
     completed_filings: int = 0

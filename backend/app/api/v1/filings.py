@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AccountNotActiveError, DuplicateFilingError, OnboardingFormNotSubmittedError
 from app.core.permissions import enforce_client_access, enforce_filing_access
-from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_user
+from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_user
 from app.database import get_db
 from app.enums import AccountStatus, AuditEventType, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -389,11 +389,11 @@ async def transition_filing(
         from app.enums import ComputationStatus
         from app.models.filing_computation import FilingComputation
 
-        # Check for an approved computation
+        # Check for a client-approved computation
         approved_comp_result = await db.execute(
             select(FilingComputation).where(
                 FilingComputation.filing_id == filing.id,
-                FilingComputation.status == ComputationStatus.APPROVED,
+                FilingComputation.status.in_([ComputationStatus.CLIENT_APPROVED, ComputationStatus.APPROVED]),
             )
         )
         approved_comp = approved_comp_result.scalar_one_or_none()
@@ -451,10 +451,10 @@ async def halt_filing(
     filing_id: UUID,
     body: FilingHaltRequest,
     request: Request,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Halt a filing (Partner or Executive action)."""
+    """Halt a filing (Partner, Manager, or Executive action)."""
     result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = result.scalar_one_or_none()
     if not filing:
@@ -588,10 +588,10 @@ async def submit_documents(
 async def mark_payment_received(
     filing_id: UUID,
     request: Request,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Mark payment as received (Executive/Partner action). Transitions to COMPLETED."""
+    """Mark payment as received (Manager/Executive/Partner action). Transitions to COMPLETED."""
     result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = result.scalar_one_or_none()
     if not filing:
@@ -650,10 +650,10 @@ async def mark_payment_received(
 async def move_to_computation(
     filing_id: UUID,
     request: Request,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually advance filing from Document Upload phase to Computation (Executive/Partner action)."""
+    """Manually advance filing from Document Upload phase to Computation (Manager/Executive/Partner action)."""
     result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = result.scalar_one_or_none()
     if not filing:

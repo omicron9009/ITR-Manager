@@ -23,6 +23,7 @@ from app.models.filing import ITRFiling
 from app.models.filing_completed_doc import FilingCompletedDoc
 from app.models.filing_computation import FilingComputation
 from app.models.filing_document import FilingDocument
+from app.models.manager_executive_assignment import ManagerExecutiveAssignment
 from app.models.user import User
 from app.schemas.action_item import ActionItemResponse
 
@@ -43,6 +44,7 @@ _REQUIRED_COMPLETED_DOCS = {
     CompletedDocType.INVOICE,
     CompletedDocType.ITR_JSON,
     CompletedDocType.ITR_FORM,
+    CompletedDocType.TAX_PAID_COMPUTATION,
 }
 
 
@@ -55,6 +57,8 @@ async def get_action_items(
     """Compute action items for the given user based on their role."""
     if user.role == UserRole.PARTNER:
         items = await _get_partner_items(db, filing_id_filter)
+    elif user.role == UserRole.MANAGER:
+        items = await _get_manager_items(db, user.id, filing_id_filter)
     elif user.role == UserRole.EXECUTIVE:
         items = await _get_executive_items(db, user.id, filing_id_filter)
     elif user.role == UserRole.CLIENT:
@@ -129,6 +133,41 @@ async def _get_partner_items(
     filing_items = await _get_filing_items_for_staff(db, filing_id_filter, scoped_client_ids=None)
     items.extend(filing_items)
 
+    # PARTNER_APPROVE_COMPUTATION — computations awaiting partner approval
+    stmt = (
+        select(ITRFiling)
+        .options(
+            selectinload(ITRFiling.client),
+            selectinload(ITRFiling.computations),
+        )
+        .where(ITRFiling.status == FilingStatus.COMPUTATION)
+    )
+    if filing_id_filter:
+        stmt = stmt.where(ITRFiling.id == filing_id_filter)
+
+    result = await db.execute(stmt)
+    filings_for_approval = result.scalars().unique().all()
+    for filing in filings_for_approval:
+        client_name = filing.client.full_name if filing.client else "Client"
+        # Partner can approve from UPLOADED (bypass) or MANAGER_APPROVED
+        needs_partner_approval = any(
+            c.status in (ComputationStatus.UPLOADED, ComputationStatus.MANAGER_APPROVED)
+            for c in filing.computations
+        )
+        if needs_partner_approval:
+            items.append(
+                ActionItemResponse(
+                    type=ActionItemType.PARTNER_APPROVE_COMPUTATION,
+                    title="Approve computation for client",
+                    description=f"Computation for {client_name} FY {filing.financial_year} awaits partner approval",
+                    priority=ActionItemPriority.HIGH,
+                    related_filing_id=filing.id,
+                    related_client_id=filing.client_id,
+                    financial_year=filing.financial_year,
+                    action_url=f"/filings/{filing.id}/computation",
+                )
+            )
+
     return items
 
 
@@ -152,6 +191,111 @@ async def _get_executive_items(
         return []
 
     return await _get_filing_items_for_staff(db, filing_id_filter, scoped_client_ids=client_ids)
+
+
+# ---------------------------------------------------------------------------
+# Manager action items (scoped to their team's clients)
+# ---------------------------------------------------------------------------
+
+
+async def _get_manager_items(
+    db: AsyncSession, manager_id: UUID, filing_id_filter: Optional[UUID] = None
+) -> list[ActionItemResponse]:
+    items: list[ActionItemResponse] = []
+
+    # Get team executive IDs
+    result = await db.execute(
+        select(ManagerExecutiveAssignment.executive_id).where(
+            ManagerExecutiveAssignment.manager_id == manager_id,
+            ManagerExecutiveAssignment.is_active == True,
+        )
+    )
+    team_exec_ids = [row[0] for row in result.all()]
+
+    # Get team client IDs
+    if team_exec_ids:
+        result = await db.execute(
+            select(ExecutiveClientAssignment.client_id).where(
+                ExecutiveClientAssignment.executive_id.in_(team_exec_ids),
+                ExecutiveClientAssignment.is_active == True,
+            )
+        )
+        team_client_ids = [row[0] for row in result.all()]
+    else:
+        team_client_ids = []
+
+    if not filing_id_filter:
+        # ASSIGN_CLIENT_TO_EXECUTIVE — active clients with no executive in this team
+        # (Manager should assign new clients to their executives)
+        assigned_subq = (
+            select(ExecutiveClientAssignment.client_id)
+            .where(ExecutiveClientAssignment.is_active == True)
+            .subquery()
+        )
+        result = await db.execute(
+            select(User).where(
+                User.role == UserRole.CLIENT,
+                User.account_status == AccountStatus.ACTIVE,
+                ~User.id.in_(select(assigned_subq.c.client_id)),
+            )
+        )
+        unassigned_clients = result.scalars().all()
+        for client in unassigned_clients:
+            items.append(
+                ActionItemResponse(
+                    type=ActionItemType.ASSIGN_CLIENT_TO_EXECUTIVE,
+                    title="Assign client to executive",
+                    description=f"{client.full_name} has no assigned executive",
+                    priority=ActionItemPriority.MEDIUM,
+                    related_client_id=client.id,
+                    action_url=f"/clients/{client.id}/assign",
+                )
+            )
+
+    # Manager-specific: MANAGER_APPROVE_COMPUTATION — computations awaiting manager approval
+    if team_client_ids or filing_id_filter:
+        stmt = (
+            select(ITRFiling)
+            .options(
+                selectinload(ITRFiling.client),
+                selectinload(ITRFiling.computations),
+            )
+            .where(ITRFiling.status == FilingStatus.COMPUTATION)
+        )
+        if filing_id_filter:
+            stmt = stmt.where(ITRFiling.id == filing_id_filter)
+        elif team_client_ids:
+            stmt = stmt.where(ITRFiling.client_id.in_(team_client_ids))
+
+        result = await db.execute(stmt)
+        filings = result.scalars().unique().all()
+
+        for filing in filings:
+            client_name = filing.client.full_name if filing.client else "Client"
+            has_uploaded_comp = any(
+                c.status == ComputationStatus.UPLOADED for c in filing.computations
+            )
+            if has_uploaded_comp:
+                items.append(
+                    ActionItemResponse(
+                        type=ActionItemType.MANAGER_APPROVE_COMPUTATION,
+                        title="Review computation",
+                        description=f"Computation for {client_name} FY {filing.financial_year} awaits your approval",
+                        priority=ActionItemPriority.HIGH,
+                        related_filing_id=filing.id,
+                        related_client_id=filing.client_id,
+                        financial_year=filing.financial_year,
+                        action_url=f"/filings/{filing.id}/computation",
+                    )
+                )
+
+    # Also include standard staff filing items for their team
+    staff_items = await _get_filing_items_for_staff(
+        db, filing_id_filter, scoped_client_ids=team_client_ids if team_client_ids else None
+    )
+    items.extend(staff_items)
+
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -248,10 +392,41 @@ async def _get_filing_items_for_staff(
             has_uploaded_comp = any(
                 c.status == ComputationStatus.UPLOADED for c in filing.computations
             )
-            has_approved_comp = any(
-                c.status == ComputationStatus.APPROVED for c in filing.computations
+            has_client_approved_comp = any(
+                c.status in (ComputationStatus.CLIENT_APPROVED, ComputationStatus.APPROVED)
+                for c in filing.computations
             )
-            if not has_uploaded_comp and not has_approved_comp:
+            has_manager_rejected_comp = any(
+                c.status == ComputationStatus.MANAGER_REJECTED for c in filing.computations
+            )
+            has_partner_rejected_comp = any(
+                c.status == ComputationStatus.REJECTED and c.rejected_by is not None
+                and c.manager_approved_by is not None  # was approved by manager then rejected by partner
+                for c in filing.computations
+            )
+
+            # REVISE_COMPUTATION — computation was rejected, executive needs to re-upload
+            if has_manager_rejected_comp and not has_uploaded_comp:
+                rejected_comp = next(
+                    (c for c in filing.computations if c.status == ComputationStatus.MANAGER_REJECTED), None
+                )
+                items.append(
+                    ActionItemResponse(
+                        type=ActionItemType.REVISE_COMPUTATION,
+                        title="Revise computation (rejected by manager)",
+                        description=f"Computation for {client_name} FY {filing.financial_year} was rejected. "
+                                    f"Reason: {rejected_comp.manager_rejection_reason if rejected_comp else 'N/A'}. "
+                                    f"Please upload a revised version.",
+                        priority=ActionItemPriority.HIGH,
+                        related_filing_id=filing.id,
+                        related_client_id=filing.client_id,
+                        financial_year=filing.financial_year,
+                        metadata={"rejection_reason": rejected_comp.manager_rejection_reason if rejected_comp else None},
+                        action_url=f"/filings/{filing.id}/computation/upload",
+                    )
+                )
+
+            if not has_uploaded_comp and not has_client_approved_comp and not has_manager_rejected_comp:
                 items.append(
                     ActionItemResponse(
                         type=ActionItemType.UPLOAD_COMPUTATION,
@@ -265,8 +440,8 @@ async def _get_filing_items_for_staff(
                     )
                 )
 
-            # 7. MOVE_TO_FILING — computation approved + tax paid
-            if has_approved_comp and filing.is_tax_paid:
+            # 7. MOVE_TO_FILING — computation client-approved + tax paid
+            if has_client_approved_comp and filing.is_tax_paid:
                 items.append(
                     ActionItemResponse(
                         type=ActionItemType.MOVE_TO_FILING,
@@ -441,12 +616,12 @@ async def _get_client_items(
                     )
                 )
 
-        # 13. REVIEW_COMPUTATION — computation uploaded, awaiting client approval
+        # 13. REVIEW_COMPUTATION — computation partner-approved, awaiting client approval
         if filing.status == FilingStatus.COMPUTATION:
-            has_uploaded_comp = any(
-                c.status == ComputationStatus.UPLOADED for c in filing.computations
+            has_partner_approved_comp = any(
+                c.status == ComputationStatus.PARTNER_APPROVED for c in filing.computations
             )
-            if has_uploaded_comp:
+            if has_partner_approved_comp:
                 items.append(
                     ActionItemResponse(
                         type=ActionItemType.REVIEW_COMPUTATION,
@@ -460,11 +635,12 @@ async def _get_client_items(
                     )
                 )
 
-            # 14. CONFIRM_TAX_PAID — computation approved but tax not paid
-            has_approved_comp = any(
-                c.status == ComputationStatus.APPROVED for c in filing.computations
+            # 14. CONFIRM_TAX_PAID — computation client-approved but tax not paid
+            has_client_approved_comp = any(
+                c.status in (ComputationStatus.CLIENT_APPROVED, ComputationStatus.APPROVED)
+                for c in filing.computations
             )
-            if has_approved_comp and not filing.is_tax_paid:
+            if has_client_approved_comp and not filing.is_tax_paid:
                 items.append(
                     ActionItemResponse(
                         type=ActionItemType.CONFIRM_TAX_PAID,

@@ -337,6 +337,14 @@ async def confirm_completed_doc_upload(
                 detail=f"Cannot upload Financial Statement in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
             )
 
+    # Validate TAX_PAID_COMPUTATION (required)
+    if doc_type == CompletedDocType.TAX_PAID_COMPUTATION:
+        if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot upload Tax Paid Computation in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
+            )
+
     # Reuse existing StoredFile if same bucket/object_key (idempotent retry)
     existing_file_result = await db.execute(
         select(StoredFile).where(
@@ -417,7 +425,7 @@ async def confirm_completed_doc_upload(
             filing_id=filing_id,
             details={"doc_type": "ITR_JSON", "filename": filename},
         )
-    elif doc_type in (CompletedDocType.ITR_FORM, CompletedDocType.FINANCIAL_STATEMENT):
+    elif doc_type in (CompletedDocType.ITR_FORM, CompletedDocType.FINANCIAL_STATEMENT, CompletedDocType.TAX_PAID_COMPUTATION):
         await record_audit_event(
             db=db,
             event_type=AuditEventType.DOCUMENT_UPLOADED,
@@ -431,7 +439,7 @@ async def confirm_completed_doc_upload(
     # Required: ITR_ACKNOWLEDGEMENT, INVOICE, ITR_JSON, ITR_FORM
     # Optional: FINANCIAL_STATEMENT (not required for transition)
     if filing.status == FilingStatus.FILING:
-        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM}
+        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
         existing_docs_result = await db.execute(
             select(FilingCompletedDoc.doc_type).where(FilingCompletedDoc.filing_id == filing_id)
         )
@@ -445,7 +453,7 @@ async def confirm_completed_doc_upload(
                 filing=filing,
                 to_status=FilingStatus.PAYMENT,
                 changed_by=current_user.id,
-                remarks="ITR filed - all required documents uploaded (Acknowledgement, Invoice, ITR JSON, ITR Form)",
+                remarks="ITR filed - all required documents uploaded (Acknowledgement, Invoice, ITR JSON, ITR Form, Tax Paid Computation)",
             )
 
             await create_notification(

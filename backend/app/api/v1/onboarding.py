@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_active_client, get_current_partner, get_current_user
+from app.core.security import get_current_active_client, get_current_manager_or_partner, get_current_partner, get_current_user
 from app.database import get_db
 from app.enums import AuditEventType, FormFieldType, UserRole
 from app.models.client_profile import ClientProfile
@@ -98,10 +98,10 @@ async def list_form_fields(
 @router.post("/fields", response_model=FormFieldResponse, status_code=201)
 async def create_form_field(
     body: FormFieldCreateRequest,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Add a new field to the onboarding form (Partner only)."""
+    """Add a new field to the onboarding form (Manager/Partner)."""
     # Validate dropdown has options
     if body.field_type == FormFieldType.DROPDOWN and not body.field_options:
         raise HTTPException(
@@ -167,10 +167,10 @@ async def create_form_field(
 async def update_form_field(
     field_id: UUID,
     body: FormFieldUpdateRequest,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a form field (Partner only)."""
+    """Update a form field (Manager/Partner)."""
     result = await db.execute(select(OnboardingFormField).where(OnboardingFormField.id == field_id))
     field = result.scalar_one_or_none()
     if not field:
@@ -195,10 +195,10 @@ async def update_form_field(
 @router.delete("/fields/{field_id}", response_model=dict)
 async def deactivate_form_field(
     field_id: UUID,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a form field (Partner only). Hard-deletes if unused, soft-deletes if referenced."""
+    """Delete a form field (Manager/Partner). Hard-deletes if unused, soft-deletes if referenced."""
     import uuid as uuid_mod
     from sqlalchemy import func as sa_func
 

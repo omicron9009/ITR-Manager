@@ -24,6 +24,19 @@ class FilingComputation(Base):
     )
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     uploaded_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    # Manager approval (first level)
+    manager_approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    manager_approved_at = Column(DateTime(timezone=True), nullable=True)
+    manager_rejected_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    manager_rejected_at = Column(DateTime(timezone=True), nullable=True)
+    manager_rejection_reason = Column(sa.Text, nullable=True)
+
+    # Partner approval (second level)
+    partner_approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    partner_approved_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Client approval/rejection (final)
     approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
     rejected_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -35,6 +48,9 @@ class FilingComputation(Base):
     filing = relationship("ITRFiling", back_populates="computations")
     file = relationship("StoredFile", foreign_keys=[file_id])
     uploader = relationship("User", foreign_keys=[uploaded_by])
+    manager_approver = relationship("User", foreign_keys=[manager_approved_by])
+    manager_rejector = relationship("User", foreign_keys=[manager_rejected_by])
+    partner_approver = relationship("User", foreign_keys=[partner_approved_by])
     approver = relationship("User", foreign_keys=[approved_by])
     rejector = relationship("User", foreign_keys=[rejected_by])
 

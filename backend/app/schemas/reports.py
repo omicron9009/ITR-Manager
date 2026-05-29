@@ -77,7 +77,7 @@ class FYSummary(BaseModel):
 # ─── Manager Distribution ───────────────────────────────────
 
 class ManagerDistItem(BaseModel):
-    tag_id: UUID
+    manager_id: UUID
     manager_name: str
     executive_count: int = 0
     total_filings: int = 0
@@ -90,25 +90,16 @@ class ManagerDistItem(BaseModel):
 
 # ─── Location Distribution ──────────────────────────────────
 
-class ManagerInLocation(BaseModel):
-    tag_id: UUID
-    manager_name: str
-    executives: list[ExecutiveDistItem] = []
-    total_filings: int = 0
-    completed_filings: int = 0
-
-
 class LocationDistItem(BaseModel):
     tag_id: UUID
     location_name: str
     executive_count: int = 0
-    manager_count: int = 0
     total_filings: int = 0
     active_filings: int = 0
     completed_filings: int = 0
     halted_filings: int = 0
     avg_days_to_complete: Optional[float] = None
-    hierarchy: list[ManagerInLocation] = []
+    executives: list[ExecutiveDistItem] = []
 
 
 # ─── Pending Report ─────────────────────────────────────────
@@ -121,7 +112,7 @@ class PendingFilingItem(BaseModel):
     financial_year: str
     status: str
     assigned_executive_name: Optional[str] = None
-    manager_tag: Optional[str] = None
+    manager_name: Optional[str] = None
     location_tag: Optional[str] = None
     days_pending: float = 0
     initiated_at: datetime
@@ -142,7 +133,7 @@ class ExecutiveLeaderboardItem(BaseModel):
 
 class ManagerLeaderboardItem(BaseModel):
     rank: int
-    tag_id: UUID
+    manager_id: UUID
     manager_name: str
     executive_count: int = 0
     completed_filings: int = 0

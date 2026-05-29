@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_partner, get_current_user
+from app.core.security import get_current_active_client, get_current_manager_executive_or_partner, get_current_executive_or_partner, get_current_partner, get_current_user
 from app.database import get_db
 from app.enums import AccountStatus, CompletedDocType, DocumentStatus, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -59,17 +59,25 @@ router = APIRouter()
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary(
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Get dashboard summary with filing counters.
     - Partner: all filings
+    - Manager: filings of their team's clients
     - Executive: only assigned client filings
     """
     # Build base query depending on role
     base_filter = []
-    if current_user.role == UserRole.EXECUTIVE:
+    if current_user.role == UserRole.MANAGER:
+        from app.services.manager_service import get_manager_team_client_ids
+        team_client_ids = await get_manager_team_client_ids(db, current_user.id)
+        if team_client_ids:
+            base_filter.append(ITRFiling.client_id.in_(team_client_ids))
+        else:
+            base_filter.append(ITRFiling.client_id == None)  # No results
+    elif current_user.role == UserRole.EXECUTIVE:
         base_filter.append(ITRFiling.assigned_executive_id == current_user.id)
 
     # Filing status counts
@@ -162,13 +170,20 @@ async def get_filings_by_status(
     status_filter: FilingStatus = Query(..., alias="status"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
     """Get drill-down list of filings filtered by status."""
     query = select(ITRFiling).where(ITRFiling.status == status_filter)
 
-    if current_user.role == UserRole.EXECUTIVE:
+    if current_user.role == UserRole.MANAGER:
+        from app.services.manager_service import get_manager_team_client_ids
+        team_client_ids = await get_manager_team_client_ids(db, current_user.id)
+        if team_client_ids:
+            query = query.where(ITRFiling.client_id.in_(team_client_ids))
+        else:
+            query = query.where(ITRFiling.client_id == None)
+    elif current_user.role == UserRole.EXECUTIVE:
         query = query.where(ITRFiling.assigned_executive_id == current_user.id)
 
     # Count

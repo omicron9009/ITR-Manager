@@ -4,6 +4,8 @@ from app.models.stored_file import StoredFile  # noqa: F401
 from app.models.user import User  # noqa: F401
 from app.models.client_profile import ClientProfile  # noqa: F401
 from app.models.executive_assignment import ExecutiveClientAssignment  # noqa: F401
+from app.models.manager_executive_assignment import ManagerExecutiveAssignment  # noqa: F401
+from app.models.manager_client_assignment import ManagerClientAssignment  # noqa: F401
 from app.models.master_document_type import MasterDocumentType  # noqa: F401
 from app.models.onboarding_form_field import OnboardingFormField  # noqa: F401
 from app.models.filing import ITRFiling  # noqa: F401
@@ -15,4 +17,5 @@ from app.models.notification import Notification  # noqa: F401
 from app.models.audit_log import AuditLog  # noqa: F401
 from app.models.tag import Tag  # noqa: F401
 from app.models.executive_tag import ExecutiveTag  # noqa: F401
+from app.models.manager_tag import ManagerTag  # noqa: F401
 from app.models.recovery_code import RecoveryCode  # noqa: F401
