@@ -36,6 +36,9 @@ pytest-asyncio==0.23.7
 # Reports
 openpyxl==3.1.5
 
+# PDF Generation
+fpdf2==2.8.1
+
 #kuch to
 prometheus-fastapi-instrumentator>=7.0.0
 prometheus-client>=0.20.0

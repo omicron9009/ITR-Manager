@@ -121,6 +121,33 @@ def create_client_directory(client_id: str, client_name: str) -> str:
     return f"clients/{client_dir}"
 
 
+def generate_declaration_object_key(client_id: str, client_name: str) -> str:
+    """
+    Generate object key for the client's declaration PDF.
+    Pattern: clients/{Name}_{client_id}/declaration/declaration_{client_id}.pdf
+    """
+    client_dir = build_client_dir(client_id, client_name)
+    return f"clients/{client_dir}/declaration/declaration_{client_id}.pdf"
+
+
+def upload_declaration_pdf(client_id: str, client_name: str, pdf_bytes: bytes) -> str:
+    """
+    Upload the declaration PDF to MinIO.
+    Returns the object key where the PDF was stored.
+    """
+    object_key = generate_declaration_object_key(client_id, client_name)
+    client = _get_client()
+    ensure_bucket_exists()
+    client.put_object(
+        bucket_name=settings.MINIO_BUCKET_NAME,
+        object_name=object_key,
+        data=io.BytesIO(pdf_bytes),
+        length=len(pdf_bytes),
+        content_type="application/pdf",
+    )
+    return object_key
+
+
 def validate_object_key_prefix(object_key: str, client_id: str, client_name: str, expected_folder: str) -> None:
     """
     Validate that a user-supplied object_key starts with the expected prefix.

@@ -24,6 +24,7 @@ class ClientProfile(Base):
     bank_account_details = Column(Text, nullable=True)
     form_data = Column(JSONB, nullable=False, default=dict)
     form_submitted_at = Column(DateTime(timezone=True), nullable=True)
+    declaration_accepted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

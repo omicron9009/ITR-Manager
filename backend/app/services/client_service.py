@@ -11,8 +11,9 @@ from app.enums import AccountStatus, AuditEventType, UserRole
 from app.models.client_profile import ClientProfile
 from app.models.user import User
 from app.services.audit_service import record_audit_event
+from app.services.declaration_service import generate_declaration_pdf
 from app.services.notification_service import create_notification
-from app.services.storage_service import create_client_directory, ensure_bucket_exists
+from app.services.storage_service import create_client_directory, ensure_bucket_exists, upload_declaration_pdf
 
 
 async def register_client(
@@ -43,9 +44,23 @@ async def register_client(
     db.add(user)
     await db.flush()
 
-    # Create empty client profile
-    profile = ClientProfile(user_id=user.id)
+    # Create empty client profile with declaration timestamp
+    now = datetime.utcnow()
+    profile = ClientProfile(user_id=user.id, declaration_accepted_at=now)
     db.add(profile)
+
+    # Generate and upload declaration PDF to MinIO
+    pdf_bytes = generate_declaration_pdf(
+        full_name=full_name,
+        email=email,
+        phone_number=phone_number,
+        accepted_at=now,
+    )
+    upload_declaration_pdf(
+        client_id=str(user.id),
+        client_name=full_name,
+        pdf_bytes=pdf_bytes,
+    )
 
     # Record audit
     await record_audit_event(

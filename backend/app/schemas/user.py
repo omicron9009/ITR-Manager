@@ -86,6 +86,14 @@ class ClientRegistrationRequest(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
     phone_number: Optional[str] = Field(None, max_length=20)
+    declaration_accepted: bool = Field(..., description="Must be true to indicate consent to the data protection declaration")
+
+    @field_validator("declaration_accepted")
+    @classmethod
+    def validate_declaration_accepted(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("You must accept the Confidentiality & Data Protection Declaration to register")
+        return v
 
     @field_validator("phone_number")
     @classmethod

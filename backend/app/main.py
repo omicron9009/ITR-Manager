@@ -240,6 +240,8 @@ async def _sync_new_columns():
         # Tax payment confirmation on itr_filings table
         ("itr_filings", "is_tax_paid", "BOOLEAN NOT NULL", "'false'"),
         ("itr_filings", "tax_paid_at", "TIMESTAMPTZ", None),
+        # Declaration consent timestamp on client_profiles table
+        ("client_profiles", "declaration_accepted_at", "TIMESTAMPTZ", None),
     ]
 
     try:
