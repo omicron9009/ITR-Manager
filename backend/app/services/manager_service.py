@@ -84,6 +84,7 @@ async def assign_executive_to_manager(
         )
     )
     existing = existing_result.scalar_one_or_none()
+    old_manager_id = None
     if existing:
         if existing.manager_id == manager_id:
             raise HTTPException(
@@ -91,6 +92,7 @@ async def assign_executive_to_manager(
                 detail="Executive is already assigned to this manager",
             )
         # Deactivate previous assignment (one manager per executive)
+        old_manager_id = existing.manager_id
         existing.is_active = False
 
     # Check if a deactivated row already exists for this pair (reactivate it)
@@ -118,6 +120,16 @@ async def assign_executive_to_manager(
         db.add(assignment)
 
     await db.flush()
+
+    # Transfer executive's clients to the new manager
+    if old_manager_id is not None:
+        await _transfer_executive_clients_to_manager(
+            db=db,
+            executive_id=executive_id,
+            new_manager_id=manager_id,
+            old_manager_id=old_manager_id,
+            transferred_by=assigned_by,
+        )
 
     await record_audit_event(
         db=db,
@@ -369,3 +381,94 @@ async def ensure_manager_client_link(
     )
     db.add(assignment)
     await db.flush()
+
+
+async def _transfer_executive_clients_to_manager(
+    db: AsyncSession,
+    executive_id: UUID,
+    new_manager_id: UUID,
+    old_manager_id: UUID,
+    transferred_by: UUID,
+) -> None:
+    """Transfer all active clients of an executive to the new manager.
+
+    When an executive is moved from one manager to another, all clients
+    handled by that executive must have their ManagerClientAssignment
+    updated to point to the new manager for data consistency.
+    """
+    from datetime import datetime
+    import logging
+    logger = logging.getLogger("app")
+
+    # Get all active clients of this executive
+    client_result = await db.execute(
+        select(ExecutiveClientAssignment.client_id).where(
+            ExecutiveClientAssignment.executive_id == executive_id,
+            ExecutiveClientAssignment.is_active == True,
+        )
+    )
+    client_ids = [row[0] for row in client_result.all()]
+
+    if not client_ids:
+        return
+
+    transferred_count = 0
+    for client_id in client_ids:
+        # Deactivate old manager-client link (if it was under the old manager)
+        old_link_result = await db.execute(
+            select(ManagerClientAssignment).where(
+                ManagerClientAssignment.client_id == client_id,
+                ManagerClientAssignment.manager_id == old_manager_id,
+                ManagerClientAssignment.is_active == True,
+            )
+        )
+        old_link = old_link_result.scalar_one_or_none()
+        if old_link:
+            old_link.is_active = False
+
+        # Check if new manager already has an active link to this client
+        new_link_result = await db.execute(
+            select(ManagerClientAssignment).where(
+                ManagerClientAssignment.client_id == client_id,
+                ManagerClientAssignment.manager_id == new_manager_id,
+            )
+        )
+        new_link = new_link_result.scalar_one_or_none()
+
+        if new_link:
+            # Reactivate existing deactivated row
+            if not new_link.is_active:
+                new_link.is_active = True
+                new_link.assigned_by = transferred_by
+                new_link.assigned_at = datetime.utcnow()
+                transferred_count += 1
+        else:
+            # Create new manager-client assignment
+            new_assignment = ManagerClientAssignment(
+                manager_id=new_manager_id,
+                client_id=client_id,
+                assigned_by=transferred_by,
+            )
+            db.add(new_assignment)
+            transferred_count += 1
+
+    await db.flush()
+
+    if transferred_count > 0:
+        logger.info(
+            f"Transferred {transferred_count} client(s) from manager {old_manager_id} "
+            f"to manager {new_manager_id} (executive {executive_id} reassignment)"
+        )
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.MANAGER_EXECUTIVE_ASSIGNED,
+            actor_id=transferred_by,
+            details={
+                "action": "client_transfer_on_executive_reassignment",
+                "executive_id": str(executive_id),
+                "old_manager_id": str(old_manager_id),
+                "new_manager_id": str(new_manager_id),
+                "clients_transferred": transferred_count,
+                "client_ids": [str(c) for c in client_ids[:20]],  # cap for large lists
+            },
+        )
