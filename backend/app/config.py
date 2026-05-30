@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
 
+    # Firm branding (used in emails)
+    FIRM_NAME: str = "PG Joshi & Company"
+    FIRM_WEBSITE: str = "pgjco.com"
+    FIRM_PHONE: str = "0712-2524309"
+    FRONTEND_URL: str = "https://workpartners.com"
+
     # Database
     POSTGRES_HOST: str = "postgres"
     POSTGRES_PORT: int = 5432

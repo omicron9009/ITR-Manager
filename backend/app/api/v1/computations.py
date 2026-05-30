@@ -202,8 +202,14 @@ async def confirm_computation_upload(
                 db=db,
                 user_id=mgr_assignment.manager_id,
                 title="Computation Uploaded — Review Required",
-                message=f"A computation has been uploaded by {current_user.full_name} for review.",
+                message=f"A computation (v{version}) has been uploaded by {current_user.full_name} for client {client_user.full_name if client_user else 'Unknown'}, FY {filing.financial_year}. Please review and approve or reject.",
                 related_filing_id=filing_id,
+                client_name=client_user.full_name if client_user else None,
+                financial_year=filing.financial_year,
+                action_by=current_user.full_name,
+                action_url_path=f"/filings/{filing_id}/computation",
+                cta_label="Review Computation",
+                extra_details={"Version": version, "Filename": filename},
             )
         else:
             # No manager — notify partner directly
@@ -216,8 +222,14 @@ async def confirm_computation_upload(
                     db=db,
                     user_id=partner.id,
                     title="Computation Uploaded — Review Required",
-                    message=f"A computation has been uploaded by {current_user.full_name} for review.",
+                    message=f"A computation (v{version}) has been uploaded by {current_user.full_name} for client {client_user.full_name if client_user else 'Unknown'}, FY {filing.financial_year}. Please review and approve.",
                     related_filing_id=filing_id,
+                    client_name=client_user.full_name if client_user else None,
+                    financial_year=filing.financial_year,
+                    action_by=current_user.full_name,
+                    action_url_path=f"/filings/{filing_id}/computation",
+                    cta_label="Review Computation",
+                    extra_details={"Version": version, "Filename": filename},
                 )
     elif current_user.role == UserRole.MANAGER:
         # Manager uploaded — notify partner
@@ -230,8 +242,14 @@ async def confirm_computation_upload(
                 db=db,
                 user_id=partner.id,
                 title="Computation Uploaded — Review Required",
-                message=f"A computation has been uploaded by Manager {current_user.full_name} for review.",
+                message=f"A computation (v{version}) has been uploaded by Manager {current_user.full_name} for client {client_user.full_name if client_user else 'Unknown'}, FY {filing.financial_year}. Please review and approve.",
                 related_filing_id=filing_id,
+                client_name=client_user.full_name if client_user else None,
+                financial_year=filing.financial_year,
+                action_by=current_user.full_name,
+                action_url_path=f"/filings/{filing_id}/computation",
+                cta_label="Review Computation",
+                extra_details={"Version": version, "Filename": filename},
             )
 
     return ComputationResponse(
@@ -400,10 +418,15 @@ async def approve_computation(
                 db=db,
                 user_id=partner.id,
                 title="Tax Payment Confirmed — Filing Advanced",
-                message=f"Tax payment confirmed by {current_user.full_name} for {filing.financial_year}. "
-                        f"Filing has automatically advanced to FILING state.",
+                message=f"Tax payment has been confirmed by {current_user.full_name} for FY {filing.financial_year}. Filing has automatically advanced to FILING state.",
                 related_filing_id=filing.id,
                 related_client_id=current_user.id,
+                client_name=current_user.full_name,
+                financial_year=filing.financial_year,
+                filing_status="FILING",
+                action_by=current_user.full_name,
+                action_url_path=f"/filings/{filing.id}",
+                cta_label="View Filing",
             )
 
         if filing.assigned_executive_id:
@@ -411,10 +434,15 @@ async def approve_computation(
                 db=db,
                 user_id=filing.assigned_executive_id,
                 title="Tax Payment Confirmed — Filing Advanced",
-                message=f"Tax payment confirmed by {current_user.full_name} for {filing.financial_year}. "
-                        f"Filing has automatically advanced to FILING state.",
+                message=f"Tax payment has been confirmed by {current_user.full_name} for FY {filing.financial_year}. Filing has automatically advanced to FILING state. Please upload the required filed documents.",
                 related_filing_id=filing.id,
                 related_client_id=current_user.id,
+                client_name=current_user.full_name,
+                financial_year=filing.financial_year,
+                filing_status="FILING",
+                action_by=current_user.full_name,
+                action_url_path=f"/filings/{filing.id}/completed-docs",
+                cta_label="Upload Filed Documents",
             )
 
         return {
@@ -501,6 +529,12 @@ async def approve_computation(
             message=notif_message,
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=filing.financial_year,
+            filing_status=filing.status.value,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}",
+            cta_label="View Filing",
         )
 
     if filing.assigned_executive_id:
@@ -511,6 +545,12 @@ async def approve_computation(
             message=notif_message,
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=filing.financial_year,
+            filing_status=filing.status.value,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}",
+            cta_label="View Filing",
         )
 
     if body.is_tax_paid:
@@ -591,22 +631,32 @@ async def reject_computation(
         await create_notification(
             db=db,
             user_id=partner.id,
-            title="Computation Rejected",
-            message=f"Computation (v{computation.version}) rejected by {current_user.full_name} "
-                    f"for {filing.financial_year}. Reason: {body.reason}",
+            title="Computation Rejected by Client",
+            message=f"Computation (v{computation.version}) has been rejected by {current_user.full_name} for FY {filing.financial_year}. A revised computation needs to be uploaded.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/computation/upload",
+            cta_label="Upload Revised Computation",
+            extra_details={"Version Rejected": computation.version, "Reason": body.reason},
         )
 
     if filing.assigned_executive_id:
         await create_notification(
             db=db,
             user_id=filing.assigned_executive_id,
-            title="Computation Rejected",
-            message=f"Computation (v{computation.version}) rejected by {current_user.full_name} "
-                    f"for {filing.financial_year}. Reason: {body.reason}",
+            title="Computation Rejected by Client",
+            message=f"Computation (v{computation.version}) has been rejected by {current_user.full_name} for FY {filing.financial_year}. Please upload a revised computation.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/computation/upload",
+            cta_label="Upload Revised Computation",
+            extra_details={"Version Rejected": computation.version, "Reason": body.reason},
         )
 
     return {
@@ -672,10 +722,14 @@ async def manager_approve_computation(
             db=db,
             user_id=partner.id,
             title="Computation Manager-Approved — Partner Review Needed",
-            message=f"Computation (v{computation.version}) approved by Manager {current_user.full_name}. "
-                    f"Please review and approve to send to client.",
+            message=f"Computation (v{computation.version}) has been approved by Manager {current_user.full_name} for FY {filing.financial_year}. Please review and approve to send to client.",
             related_filing_id=filing.id,
             related_client_id=filing.client_id,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/computation",
+            cta_label="Review & Approve",
+            extra_details={"Version": computation.version},
         )
 
     return {
@@ -736,10 +790,14 @@ async def manager_reject_computation(
             db=db,
             user_id=computation.uploaded_by,
             title="Computation Rejected by Manager",
-            message=f"Computation (v{computation.version}) rejected by {current_user.full_name}. "
-                    f"Reason: {body.reason}. Please upload a revised computation.",
+            message=f"Computation (v{computation.version}) for FY {filing.financial_year} has been rejected by Manager {current_user.full_name}. Please review the feedback and upload a revised version.",
             related_filing_id=filing.id,
             related_client_id=filing.client_id,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/computation/upload",
+            cta_label="Upload Revised Computation",
+            extra_details={"Version Rejected": computation.version, "Reason": body.reason},
         )
 
     # Notify partner about the rejection
@@ -752,10 +810,14 @@ async def manager_reject_computation(
             db=db,
             user_id=partner.id,
             title="Computation Rejected by Manager",
-            message=f"Computation (v{computation.version}) for FY {filing.financial_year} rejected by Manager {current_user.full_name}. "
-                    f"Reason: {body.reason}. Executive will upload a revised version.",
+            message=f"Computation (v{computation.version}) for FY {filing.financial_year} has been rejected by Manager {current_user.full_name}. Executive will upload a revised version.",
             related_filing_id=filing.id,
             related_client_id=filing.client_id,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/computation",
+            cta_label="View Computation",
+            extra_details={"Version Rejected": computation.version, "Reason": body.reason},
         )
 
     return {
@@ -817,8 +879,12 @@ async def partner_approve_computation(
         db=db,
         user_id=filing.client_id,
         title="Computation Ready for Review",
-        message="Your tax computation is ready for review. Please approve or reject it.",
+        message=f"Your tax computation for FY {filing.financial_year} is ready for review. Please review and approve or reject it. If tax payment is required, you will be asked to confirm payment after approval.",
         related_filing_id=filing.id,
+        financial_year=filing.financial_year,
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}/computation",
+        cta_label="Review Computation",
     )
 
     return {
@@ -881,10 +947,14 @@ async def partner_reject_computation(
             db=db,
             user_id=computation.uploaded_by,
             title="Computation Rejected by Partner",
-            message=f"Computation (v{computation.version}) for FY {filing.financial_year} rejected by Partner. "
-                    f"Reason: {body.reason}. Please upload a revised computation.",
+            message=f"Computation (v{computation.version}) for FY {filing.financial_year} has been rejected by Partner. Please review the feedback and upload a revised computation.",
             related_filing_id=filing.id,
             related_client_id=filing.client_id,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/computation/upload",
+            cta_label="Upload Revised Computation",
+            extra_details={"Version Rejected": computation.version, "Reason": body.reason},
         )
 
     # Notify the manager (if executive is under a manager)
@@ -901,10 +971,14 @@ async def partner_reject_computation(
                 db=db,
                 user_id=mgr_row[0],
                 title="Computation Rejected by Partner",
-                message=f"Computation (v{computation.version}) for FY {filing.financial_year} rejected by Partner. "
-                        f"Reason: {body.reason}. Executive needs to upload a revised version.",
+                message=f"Computation (v{computation.version}) for FY {filing.financial_year} has been rejected by Partner. Executive needs to upload a revised version.",
                 related_filing_id=filing.id,
                 related_client_id=filing.client_id,
+                financial_year=filing.financial_year,
+                action_by=current_user.full_name,
+                action_url_path=f"/filings/{filing.id}/computation",
+                cta_label="View Computation",
+                extra_details={"Version Rejected": computation.version, "Reason": body.reason},
             )
 
     return {

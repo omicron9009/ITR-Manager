@@ -23,6 +23,13 @@ async def _deliver_email_for_notification(
     user_email: str,
     title: str,
     message: str,
+    client_name: Optional[str] = None,
+    financial_year: Optional[str] = None,
+    filing_status: Optional[str] = None,
+    action_by: Optional[str] = None,
+    action_url_path: Optional[str] = None,
+    cta_label: Optional[str] = None,
+    extra_details: Optional[dict] = None,
 ) -> None:
     """Fire-and-forget: send email using an independent DB session."""
     from datetime import datetime
@@ -37,6 +44,13 @@ async def _deliver_email_for_notification(
                 title=title,
                 message=message,
                 db=db,
+                client_name=client_name,
+                financial_year=financial_year,
+                filing_status=filing_status,
+                action_by=action_by,
+                action_url_path=action_url_path,
+                cta_label=cta_label,
+                extra_details=extra_details,
             )
             if sent:
                 await db.execute(
@@ -57,6 +71,14 @@ async def create_notification(
     channel: NotificationChannel = NotificationChannel.BOTH,
     related_filing_id: Optional[UUID] = None,
     related_client_id: Optional[UUID] = None,
+    # Rich email context (optional — backwards compatible)
+    client_name: Optional[str] = None,
+    financial_year: Optional[str] = None,
+    filing_status: Optional[str] = None,
+    action_by: Optional[str] = None,
+    action_url_path: Optional[str] = None,
+    cta_label: Optional[str] = None,
+    extra_details: Optional[dict] = None,
 ) -> Notification:
     """Create an in-app notification and dispatch email in the background.
 
@@ -93,6 +115,13 @@ async def create_notification(
                         user_email=user_email,
                         title=clean_title,
                         message=clean_message,
+                        client_name=client_name,
+                        financial_year=financial_year,
+                        filing_status=filing_status,
+                        action_by=action_by,
+                        action_url_path=action_url_path,
+                        cta_label=cta_label,
+                        extra_details=extra_details,
                     )
                 )
                 # Prevent task from being garbage-collected; auto-discard on completion

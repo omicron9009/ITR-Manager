@@ -290,8 +290,11 @@ async def assign_client_to_manager(
     await create_notification(
         db=db,
         user_id=manager_id,
-        title="New client assigned",
-        message=f"Client {client.full_name} has been assigned to you.",
+        title="New Client Assigned",
+        message=f"Client {client.full_name} has been assigned to you. You are now responsible for overseeing their filing progress.",
+        client_name=client.full_name,
+        action_url_path=f"/clients/{client_id}",
+        cta_label="View Client",
     )
 
     return assignment

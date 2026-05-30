@@ -11,6 +11,7 @@ from app.api.v1 import (
     documents,
     email,
     executives,
+    feedback,
     filings,
     managers,
     notifications,
@@ -39,3 +40,4 @@ api_router.include_router(email.router, prefix="/email", tags=["Email Configurat
 api_router.include_router(tags.router, prefix="/tags", tags=["Tags"])
 api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
 api_router.include_router(action_items.router, prefix="/action-items", tags=["Action Items"])
+api_router.include_router(feedback.router, prefix="/feedback", tags=["Feedback"])

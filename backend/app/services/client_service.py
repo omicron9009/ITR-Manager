@@ -87,8 +87,12 @@ async def register_client(
             db=db,
             user_id=partner.id,
             title="New Client Registration",
-            message=f"New client registration pending verification - {full_name}",
+            message=f"A new client ({full_name}) has registered and is awaiting verification. Please review their details and approve or reject.",
             related_client_id=user.id,
+            client_name=full_name,
+            action_url_path="/clients/pending",
+            cta_label="Verify Client",
+            extra_details={"Email": email},
         )
 
     await db.flush()
@@ -144,7 +148,9 @@ async def activate_client(
         db=db,
         user_id=client_id,
         title="Account Verified",
-        message="Your account has been verified. You may now initiate your ITR filing.",
+        message="Your account has been successfully verified. You can now log in and initiate your ITR filing. Please complete the onboarding form to get started.",
+        action_url_path="/onboarding/form",
+        cta_label="Complete Onboarding",
     )
 
     # Notify Partner if fee not set
@@ -155,8 +161,11 @@ async def activate_client(
                 db=db,
                 user_id=partner.id,
                 title="Professional Fee Pending",
-                message=f"Professional fee has not been set for client {client.full_name}. Please set it before filing can begin.",
+                message=f"Professional fee has not been set for client {client.full_name}. Please set the fee so the client can initiate their filing.",
                 related_client_id=client_id,
+                client_name=client.full_name,
+                action_url_path=f"/clients/{client_id}",
+                cta_label="Set Professional Fee",
             )
 
     # Create the client's base directory in MinIO
@@ -197,7 +206,8 @@ async def reject_client(
         db=db,
         user_id=client_id,
         title="Registration Rejected",
-        message=f"Your registration has been rejected. Reason: {reason}",
+        message=f"We regret to inform you that your registration has been rejected. Reason: {reason}. If you believe this is an error, please contact us.",
+        extra_details={"Reason": reason},
     )
 
     await db.flush()

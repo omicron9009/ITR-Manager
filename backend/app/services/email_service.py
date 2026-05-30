@@ -124,26 +124,123 @@ async def send_notification_email(
     title: str,
     message: str,
     db: Optional[AsyncSession] = None,
+    # Rich context fields (all optional — backwards compatible)
+    client_name: Optional[str] = None,
+    financial_year: Optional[str] = None,
+    filing_status: Optional[str] = None,
+    action_by: Optional[str] = None,
+    action_url_path: Optional[str] = None,
+    cta_label: Optional[str] = None,
+    extra_details: Optional[dict] = None,
 ) -> bool:
-    """Send a notification email with standard template."""
-    html_body = f"""
-    <html>
-    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: #1a56db; padding: 20px; color: white; text-align: center;">
-            <h2>{settings.APP_NAME}</h2>
+    """Send a notification email with professional branded template."""
+    html_body = _build_professional_email(
+        title=title,
+        message=message,
+        client_name=client_name,
+        financial_year=financial_year,
+        filing_status=filing_status,
+        action_by=action_by,
+        action_url_path=action_url_path,
+        cta_label=cta_label,
+        extra_details=extra_details,
+    )
+    return await send_email(to_email=to_email, subject=f"{settings.FIRM_NAME} — {title}", body_html=html_body, db=db)
+
+
+def _build_professional_email(
+    title: str,
+    message: str,
+    client_name: Optional[str] = None,
+    financial_year: Optional[str] = None,
+    filing_status: Optional[str] = None,
+    action_by: Optional[str] = None,
+    action_url_path: Optional[str] = None,
+    cta_label: Optional[str] = None,
+    extra_details: Optional[dict] = None,
+) -> str:
+    """Build a professional HTML email with firm branding and context."""
+    frontend_url = settings.FRONTEND_URL.rstrip("/")
+    firm_name = settings.FIRM_NAME
+    firm_website = settings.FIRM_WEBSITE
+    firm_phone = settings.FIRM_PHONE
+
+    # Build details rows
+    details_html = ""
+    detail_rows = []
+    if client_name:
+        detail_rows.append(("Client", client_name))
+    if financial_year:
+        detail_rows.append(("Financial Year", financial_year))
+    if filing_status:
+        detail_rows.append(("Filing Status", filing_status))
+    if action_by:
+        detail_rows.append(("Action By", action_by))
+    if extra_details:
+        for key, value in extra_details.items():
+            detail_rows.append((key, str(value)))
+
+    if detail_rows:
+        rows_html = "".join(
+            f'<tr><td style="padding:6px 12px;font-weight:600;color:#374151;border-bottom:1px solid #f3f4f6;">{k}</td>'
+            f'<td style="padding:6px 12px;color:#1f2937;border-bottom:1px solid #f3f4f6;">{v}</td></tr>'
+            for k, v in detail_rows
+        )
+        details_html = f"""
+        <table style="width:100%;border-collapse:collapse;margin:16px 0;background:#f9fafb;border-radius:6px;overflow:hidden;">
+            {rows_html}
+        </table>
+        """
+
+    # CTA button
+    cta_html = ""
+    if action_url_path and cta_label:
+        full_url = f"{frontend_url}{action_url_path}"
+        cta_html = f"""
+        <div style="text-align:center;margin:24px 0;">
+            <a href="{full_url}" style="display:inline-block;background:#1a56db;color:#ffffff;
+               padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">
+                {cta_label} &rarr;
+            </a>
         </div>
-        <div style="padding: 20px; border: 1px solid #e5e7eb;">
-            <h3>{title}</h3>
-            <p>{message}</p>
-            <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
-            <p style="color: #6b7280; font-size: 12px;">
-                This is an automated notification from {settings.APP_NAME}.
-            </p>
-        </div>
-    </body>
-    </html>
-    """
-    return await send_email(to_email=to_email, subject=title, body_html=html_body, db=db)
+        """
+
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:'Segoe UI',Arial,sans-serif;">
+<div style="max-width:600px;margin:0 auto;background:#ffffff;">
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#1a56db 0%,#1e40af 100%);padding:28px 24px;text-align:center;">
+        <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:700;letter-spacing:0.5px;">{firm_name}</h1>
+        <p style="margin:4px 0 0;color:#bfdbfe;font-size:12px;">{settings.APP_NAME}</p>
+    </div>
+
+    <!-- Body -->
+    <div style="padding:28px 24px;">
+        <h2 style="margin:0 0 12px;color:#111827;font-size:18px;font-weight:600;">{title}</h2>
+        <p style="margin:0 0 16px;color:#374151;font-size:14px;line-height:1.6;">{message}</p>
+
+        {details_html}
+        {cta_html}
+    </div>
+
+    <!-- Footer -->
+    <div style="background:#f9fafb;padding:20px 24px;border-top:1px solid #e5e7eb;">
+        <p style="margin:0 0 4px;color:#374151;font-size:13px;font-weight:600;">{firm_name}</p>
+        <p style="margin:0 0 4px;color:#6b7280;font-size:12px;">
+            {"<a href='https://" + firm_website + "' style='color:#1a56db;text-decoration:none;'>" + firm_website + "</a> &nbsp;|&nbsp; " if firm_website else ""}
+            {firm_phone if firm_phone else ""}
+        </p>
+        <p style="margin:12px 0 0;color:#9ca3af;font-size:11px;">
+            This is an automated notification. Please do not reply to this email.<br>
+            To manage your notifications, log in at
+            <a href="{frontend_url}" style="color:#1a56db;text-decoration:none;">{frontend_url.replace('https://', '')}</a>
+        </p>
+    </div>
+</div>
+</body>
+</html>"""
 
 
 async def send_email_with_attachment(

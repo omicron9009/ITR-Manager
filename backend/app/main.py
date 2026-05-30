@@ -338,6 +338,24 @@ async def _sync_new_columns():
                 )
                 logger.info("Created index 'ix_filing_doc_type'")
 
+            # Ensure filing_feedback table exists (for existing deployments)
+            feedback_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'filing_feedback'"
+            )
+            if not feedback_table_exists:
+                await conn.execute("""
+                    CREATE TABLE filing_feedback (
+                        id UUID PRIMARY KEY,
+                        filing_id UUID NOT NULL REFERENCES itr_filings(id) ON DELETE CASCADE,
+                        client_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        CONSTRAINT uq_filing_feedback_filing_id UNIQUE (filing_id)
+                    )
+                """)
+                logger.info("Created table 'filing_feedback'")
+
         finally:
             await conn.close()
 

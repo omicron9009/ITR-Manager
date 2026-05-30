@@ -213,8 +213,11 @@ async def reject_documents(
             db=db,
             user_id=client_id,
             title="Documents Need Correction",
-            message=f"The following documents need to be re-uploaded: {', '.join(rejected_names)}",
+            message=f"The following documents for your filing need to be corrected and re-uploaded: {', '.join(rejected_names)}. Please upload revised versions at your earliest convenience.",
             related_filing_id=filing_id,
+            action_url_path=f"/filings/{filing_id}/documents",
+            cta_label="Re-upload Documents",
+            extra_details={"Rejected Documents": ", ".join(rejected_names)},
         )
 
     await db.flush()

@@ -132,9 +132,14 @@ async def initiate_filing(
             db=db,
             user_id=partner.id,
             title="New ITR Filing Initiated",
-            message=f"New ITR Filing Initiated - {current_user.full_name}, {body.financial_year}",
+            message=f"A new ITR Filing has been initiated by {current_user.full_name} for FY {body.financial_year}.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=body.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}",
+            cta_label="View Filing",
         )
 
     # Notify assigned Executive if any
@@ -152,9 +157,14 @@ async def initiate_filing(
             db=db,
             user_id=exec_assignment.executive_id,
             title="New ITR Filing Initiated",
-            message=f"New ITR Filing Initiated - {current_user.full_name}, {body.financial_year}",
+            message=f"A new ITR Filing has been initiated by {current_user.full_name} for FY {body.financial_year}. Please send the document checklist.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=body.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/documents/assign",
+            cta_label="Send Document Checklist",
         )
 
     # Client confirmation notification
@@ -162,8 +172,11 @@ async def initiate_filing(
         db=db,
         user_id=current_user.id,
         title="Filing Initiated Successfully",
-        message=f"Your ITR Filing for {body.financial_year} has been initiated successfully.",
+        message=f"Your ITR Filing for FY {body.financial_year} has been initiated successfully. You will be notified when your document checklist is ready.",
         related_filing_id=filing.id,
+        financial_year=body.financial_year,
+        action_url_path=f"/filings/{filing.id}",
+        cta_label="View My Filing",
     )
 
     # Email engagement letter PDF to client (async background task)
@@ -279,9 +292,14 @@ async def update_filing_fee(
         db=db,
         user_id=filing.client_id,
         title="Professional Fee Change Proposed",
-        message=f"A revised professional fee of Rs. {fee:.2f} has been proposed for your ITR filing ({filing.financial_year}). Please review and approve.",
+        message=f"A revised professional fee of Rs. {fee:.2f} has been proposed for your ITR filing (FY {filing.financial_year}). Please review and approve or reject the proposed fee.",
         related_filing_id=filing.id,
         related_client_id=filing.client_id,
+        financial_year=filing.financial_year,
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}/fee",
+        cta_label="Review Fee Change",
+        extra_details={"Proposed Fee": f"Rs. {fee:.2f}", "Current Fee": f"Rs. {filing.professional_fee:.2f}" if filing.professional_fee else "Not set"},
     )
 
     await db.flush()
@@ -360,9 +378,15 @@ async def approve_fee_change(
             db=db,
             user_id=partner.id,
             title="Fee Change Approved",
-            message=f"{current_user.full_name} approved the revised fee of Rs. {filing.professional_fee:.2f} for {filing.financial_year}.",
+            message=f"{current_user.full_name} has approved the revised professional fee for FY {filing.financial_year}.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}",
+            cta_label="View Filing",
+            extra_details={"Approved Fee": f"Rs. {filing.professional_fee:.2f}"},
         )
 
     # Email updated engagement letter to client (background)
@@ -419,9 +443,15 @@ async def reject_fee_change(
             db=db,
             user_id=partner.id,
             title="Fee Change Rejected",
-            message=f"{current_user.full_name} rejected the proposed fee of Rs. {rejected_fee:.2f} for {filing.financial_year}. Current fee remains Rs. {filing.professional_fee:.2f}.",
+            message=f"{current_user.full_name} has rejected the proposed fee change for FY {filing.financial_year}. The current fee remains unchanged.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}",
+            cta_label="View Filing",
+            extra_details={"Rejected Fee": f"Rs. {rejected_fee:.2f}", "Current Fee": f"Rs. {filing.professional_fee:.2f}" if filing.professional_fee else "Not set"},
         )
 
     await db.flush()
@@ -844,20 +874,30 @@ async def submit_documents(
         await create_notification(
             db=db,
             user_id=partner.id,
-            title="Documents Submitted",
-            message=f"Documents submitted by {current_user.full_name} for {filing.financial_year}",
+            title="Documents Submitted for Review",
+            message=f"{current_user.full_name} has submitted documents for FY {filing.financial_year}. Please review and approve.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/documents",
+            cta_label="Review Documents",
         )
 
     if filing.assigned_executive_id:
         await create_notification(
             db=db,
             user_id=filing.assigned_executive_id,
-            title="Documents Submitted",
-            message=f"Documents submitted by {current_user.full_name} for {filing.financial_year}",
+            title="Documents Submitted for Review",
+            message=f"{current_user.full_name} has submitted documents for FY {filing.financial_year}. Please review and approve.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=filing.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/documents",
+            cta_label="Review Documents",
         )
 
     return {"message": "Documents submitted for review", "status": filing.status.value}
@@ -918,8 +958,13 @@ async def mark_payment_received(
         db=db,
         user_id=filing.client_id,
         title="Filing Completed",
-        message=f"Your ITR filing for {filing.financial_year} is complete. Documents and invoice are now accessible.",
+        message=f"Congratulations! Your ITR filing for FY {filing.financial_year} has been completed successfully. All documents including acknowledgement and invoice are now available for download.",
         related_filing_id=filing.id,
+        financial_year=filing.financial_year,
+        filing_status="COMPLETED",
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}",
+        cta_label="View Filing & Download Documents",
     )
 
     return {"message": "Payment received. Filing marked as completed.", "status": filing.status.value}
@@ -986,8 +1031,13 @@ async def move_to_computation(
         db=db,
         user_id=filing.client_id,
         title="Filing Advanced to Computation",
-        message=f"Your ITR filing for {filing.financial_year} has moved to computation phase.",
+        message=f"Your ITR filing for FY {filing.financial_year} has advanced to the computation phase. Our team is now preparing your tax computation. You will be notified once it is ready for your review.",
         related_filing_id=filing.id,
+        financial_year=filing.financial_year,
+        filing_status="COMPUTATION",
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}",
+        cta_label="View Filing Progress",
     )
 
     return {"message": "Filing moved to computation.", "status": filing.status.value}
