@@ -28,6 +28,7 @@ class PendingVerificationItem(BaseModel):
     id: UUID
     full_name: str
     email: str
+    phone_number: Optional[str] = None
     registered_at: datetime
 
     model_config = {"from_attributes": True}
