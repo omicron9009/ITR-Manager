@@ -16,8 +16,15 @@ class FilingStatusCounter(BaseModel):
     label: str
 
 
+class ComputationSubStateCounter(BaseModel):
+    sub_status: str
+    raw_status: str
+    count: int
+
+
 class DashboardSummaryResponse(BaseModel):
     counters: list[FilingStatusCounter]
+    computation_sub_counters: list[ComputationSubStateCounter] = []
     total_clients: int
     pending_verification_count: int
     total_active_filings: int
@@ -48,6 +55,7 @@ class FilingDrillDownItem(BaseModel):
     financial_year: str
     status: FilingStatus
     assigned_executive_name: Optional[str] = None
+    computation_sub_status: Optional[str] = None
     last_updated: datetime
 
     model_config = {"from_attributes": True}

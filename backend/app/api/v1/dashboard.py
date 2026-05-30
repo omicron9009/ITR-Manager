@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.permissions import enforce_client_access
 from app.core.security import get_current_active_client, get_current_manager_executive_or_partner, get_current_executive_or_partner, get_current_partner, get_current_user
 from app.database import get_db
-from app.enums import AccountStatus, CompletedDocType, DocumentStatus, FilingStatus, UserRole
+from app.enums import AccountStatus, CompletedDocType, ComputationStatus, DocumentStatus, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
 from app.models.executive_assignment import ExecutiveClientAssignment
 from app.models.filing import ITRFiling
@@ -26,6 +26,7 @@ from app.schemas.dashboard import (
     ClientFilingDetail,
     ClientFilingOverview,
     ClientStatusBreakdown,
+    ComputationSubStateCounter,
     DashboardSummaryResponse,
     DirectoryComputationItem,
     DirectoryCompletedDocItem,
@@ -50,6 +51,59 @@ from app.models.master_document_type import MasterDocumentType
 from app.services.filing_service import calculate_progress_percentage
 
 router = APIRouter()
+
+
+# ─── Helper: Role-aware computation label ────────────────────
+_COMPUTATION_LABELS = {
+    None: {
+        UserRole.EXECUTIVE: "Pending Upload",
+        UserRole.MANAGER: "Pending Executive Upload",
+        UserRole.PARTNER: "Pending Upload",
+    },
+    ComputationStatus.UPLOADED: {
+        UserRole.EXECUTIVE: "Manager Approval Pending",
+        UserRole.MANAGER: "Your Approval Pending",
+        UserRole.PARTNER: "Manager Approval Pending",
+    },
+    ComputationStatus.MANAGER_APPROVED: {
+        UserRole.EXECUTIVE: "Partner Approval Pending",
+        UserRole.MANAGER: "Partner Approval Pending",
+        UserRole.PARTNER: "Your Approval Pending",
+    },
+    ComputationStatus.PARTNER_APPROVED: {
+        UserRole.EXECUTIVE: "Client Approval Pending",
+        UserRole.MANAGER: "Client Approval Pending",
+        UserRole.PARTNER: "Client Approval Pending",
+    },
+    ComputationStatus.CLIENT_APPROVED: {
+        UserRole.EXECUTIVE: "Approved",
+        UserRole.MANAGER: "Approved",
+        UserRole.PARTNER: "Approved",
+    },
+    ComputationStatus.REJECTED: {
+        UserRole.EXECUTIVE: "Client Rejected — Re-upload",
+        UserRole.MANAGER: "Client Rejected",
+        UserRole.PARTNER: "Client Rejected",
+    },
+    ComputationStatus.MANAGER_REJECTED: {
+        UserRole.EXECUTIVE: "Manager Rejected — Re-upload",
+        UserRole.MANAGER: "Rejected by You",
+        UserRole.PARTNER: "Manager Rejected",
+    },
+}
+
+
+def get_computation_label(role: UserRole, comp_status: "ComputationStatus | None") -> str:
+    """Return a role-aware human label for the computation sub-state."""
+    role_map = _COMPUTATION_LABELS.get(comp_status)
+    if role_map:
+        return role_map.get(role, comp_status.value if comp_status else "Unknown")
+    return comp_status.value if comp_status else "Unknown"
+
+
+def get_computation_raw_status(comp_status: "ComputationStatus | None") -> str:
+    """Return raw status string (NOT_UPLOADED when no computation exists)."""
+    return comp_status.value if comp_status else "NOT_UPLOADED"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -128,8 +182,40 @@ async def get_dashboard_summary(
     )
     total_active = active_result.scalar() or 0
 
+    # ── Computation sub-state counters ──
+    # Get all filings in COMPUTATION state (scoped by role)
+    comp_filings_result = await db.execute(
+        select(ITRFiling.id).where(ITRFiling.status == FilingStatus.COMPUTATION, *base_filter)
+    )
+    comp_filing_ids = [row[0] for row in comp_filings_result.all()]
+
+    from collections import Counter
+    sub_state_counts: Counter = Counter()
+
+    if comp_filing_ids:
+        # For each computation-state filing, get the latest computation status
+        for fid in comp_filing_ids:
+            latest_comp_result = await db.execute(
+                select(FilingComputation.status)
+                .where(FilingComputation.filing_id == fid)
+                .order_by(FilingComputation.version.desc())
+                .limit(1)
+            )
+            latest_status = latest_comp_result.scalar()
+            sub_state_counts[latest_status] += 1  # None means not uploaded
+
+    computation_sub_counters = [
+        ComputationSubStateCounter(
+            sub_status=get_computation_label(current_user.role, comp_st),
+            raw_status=get_computation_raw_status(comp_st),
+            count=cnt,
+        )
+        for comp_st, cnt in sub_state_counts.items()
+    ]
+
     return DashboardSummaryResponse(
         counters=counters,
+        computation_sub_counters=computation_sub_counters,
         total_clients=total_clients,
         pending_verification_count=pending_count,
         total_active_filings=total_active,
@@ -208,6 +294,18 @@ async def get_filings_by_status(
             exec_user = exec_result.scalar_one_or_none()
             exec_name = exec_user.full_name if exec_user else None
 
+        # Computation sub-status (only relevant for COMPUTATION filings)
+        comp_sub_label = None
+        if status_filter == FilingStatus.COMPUTATION:
+            latest_comp_result = await db.execute(
+                select(FilingComputation.status)
+                .where(FilingComputation.filing_id == filing.id)
+                .order_by(FilingComputation.version.desc())
+                .limit(1)
+            )
+            latest_comp_status = latest_comp_result.scalar()
+            comp_sub_label = get_computation_label(current_user.role, latest_comp_status)
+
         items.append(FilingDrillDownItem(
             filing_id=filing.id,
             client_id=filing.client_id,
@@ -216,6 +314,7 @@ async def get_filings_by_status(
             financial_year=filing.financial_year,
             status=filing.status,
             assigned_executive_name=exec_name,
+            computation_sub_status=comp_sub_label,
             last_updated=filing.updated_at,
         ))
 
