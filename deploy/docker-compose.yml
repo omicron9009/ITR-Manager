@@ -29,7 +29,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2gb
+          memory: 4gb
     restart: unless-stopped
 
   minio:
@@ -57,7 +57,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1gb
+          memory: 2gb
     restart: unless-stopped
 
   # ═══════════════════════════════════════════════════════════════
@@ -98,7 +98,7 @@ services:
       - .env
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`api.localhost`) || PathPrefix(`/api`)"
+      - "traefik.http.routers.backend.rule=Host(`api.workpartners.co.in`) || PathPrefix(`/api`)"
       - "traefik.http.routers.backend.entrypoints=web"
       - "traefik.http.services.backend.loadbalancer.server.port=8000"
     depends_on:
@@ -112,7 +112,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2gb
+          memory: 4gb
     restart: unless-stopped
 
   frontend-app:
@@ -122,7 +122,7 @@ services:
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`app.localhost`)"
+      - "traefik.http.routers.frontend.rule=Host(`workpartners.co.in`)"
       - "traefik.http.routers.frontend.entrypoints=web"
       - "traefik.http.services.frontend.loadbalancer.server.port=3000"
     depends_on:
@@ -132,7 +132,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512mb
+          memory: 1gb
     restart: unless-stopped
 
   # ═══════════════════════════════════════════════════════════════
@@ -173,7 +173,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1gb
+          memory: 2gb
     restart: unless-stopped
 
   grafana:
@@ -199,5 +199,5 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8gb
+          memory: 1gb
     restart: unless-stopped

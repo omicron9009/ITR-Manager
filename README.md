@@ -247,3 +247,7 @@ docker run -it `
 ```bash
 docker compose up -d --scale cloudflared=0
 ```
+
+
+
+docker run cloudflare/cloudflared:latest tunnel --no-autoupdate run --token eyJhIjoiNWJhZDU5ZTE1YzE3NzJkOTk5MTQ1NzlkMTFiMDNjYTIiLCJ0IjoiZjA0NTgwODYtNDg5Yi00MDdkLWJkNjAtN2Y2MjE1YjA1ODFmIiwicyI6Ik9UazRNamt3T0dVdE5UQXlOaTAwTnpoaUxXRTVNR010TURnMVkyTTBPR1prWlRreCJ9
