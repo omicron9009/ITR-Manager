@@ -131,7 +131,7 @@ async def get_email_auth_url(
         flow = Flow.from_client_config(
             creds_data,
             scopes=["https://www.googleapis.com/auth/gmail.send"],
-            redirect_uri="http://localhost:3000/partner/email-config", # 
+            redirect_uri="https://workpartners.co.in/partner/email-config", # 
         )
         auth_url, _ = flow.authorization_url(prompt="consent")
 
@@ -177,7 +177,7 @@ async def authorize_email(
         flow = Flow.from_client_config(
             creds_data,
             scopes=["https://www.googleapis.com/auth/gmail.send"],
-            redirect_uri="http://localhost:3000/partner/email-config",
+            redirect_uri="https://workpartners.co.in/partner/email-config",
         )
         flow.fetch_token(code=auth_code)
         creds = flow.credentials
