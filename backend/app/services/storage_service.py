@@ -38,6 +38,7 @@ def _get_public_client() -> Minio:
             access_key=settings.MINIO_ACCESS_KEY,
             secret_key=settings.MINIO_SECRET_KEY,
             secure=settings.MINIO_PUBLIC_USE_SSL,
+            region="us-east-1",
         )
     return _minio_public_client
 

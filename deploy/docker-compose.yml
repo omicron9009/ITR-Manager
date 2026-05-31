@@ -45,6 +45,11 @@ services:
       # Expose MinIO API (presigned URLs) and Console (UI) on LAN
       - "9000:9000"
       - "9001:9001"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.minio.rule=Host(`storage.workpartners.co.in`)"
+      - "traefik.http.routers.minio.entrypoints=web"
+      - "traefik.http.services.minio.loadbalancer.server.port=9000"
     networks:
       - ingress_network
       - internal_network
