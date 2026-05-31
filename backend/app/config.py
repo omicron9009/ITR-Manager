@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     FIRM_NAME: str = "PG Joshi & Company"
     FIRM_WEBSITE: str = "pgjco.com"
     FIRM_PHONE: str = "0712-2524309"
-    FRONTEND_URL: str = "https://workpartners.com"
+    FRONTEND_URL: str = "https://workpartners.co.in"
 
     # Database
     POSTGRES_HOST: str = "postgres"
