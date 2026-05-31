@@ -49,8 +49,14 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.minio.rule=Host(`storage.workpartners.co.in`)"
       - "traefik.http.routers.minio.entrypoints=web"
-      - "traefik.http.routers.minio.middlewares=minio-ratelimit@docker"
+      - "traefik.http.routers.minio.middlewares=minio-cors@docker,minio-ratelimit@docker"
       - "traefik.http.services.minio.loadbalancer.server.port=9000"
+      # CORS middleware: allow browser cross-origin access to presigned URLs
+      - "traefik.http.middlewares.minio-cors.headers.accesscontrolalloworiginlist=https://workpartners.co.in,http://localhost:3000"
+      - "traefik.http.middlewares.minio-cors.headers.accesscontrolallowmethods=GET,PUT,HEAD,OPTIONS"
+      - "traefik.http.middlewares.minio-cors.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.minio-cors.headers.accesscontrolmaxage=3600"
+      - "traefik.http.middlewares.minio-cors.headers.addvaryheader=true"
       # Rate limit middleware: 50 req/s average, 100 burst
       - "traefik.http.middlewares.minio-ratelimit.ratelimit.average=50"
       - "traefik.http.middlewares.minio-ratelimit.ratelimit.burst=100"

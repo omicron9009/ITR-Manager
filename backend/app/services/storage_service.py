@@ -60,6 +60,35 @@ def ensure_bucket_exists():
         # KMS not configured or MinIO version doesn't support it — skip silently
         pass
 
+    # Set CORS policy so browsers can fetch presigned URLs cross-origin
+    try:
+        from minio.commonconfig import ENABLED
+        cors_config = """<?xml version="1.0" encoding="UTF-8"?>
+<CORSConfiguration>
+  <CORSRule>
+    <AllowedOrigin>https://workpartners.co.in</AllowedOrigin>
+    <AllowedOrigin>http://localhost:3000</AllowedOrigin>
+    <AllowedMethod>GET</AllowedMethod>
+    <AllowedMethod>PUT</AllowedMethod>
+    <AllowedMethod>HEAD</AllowedMethod>
+    <AllowedMethod>OPTIONS</AllowedMethod>
+    <AllowedHeader>*</AllowedHeader>
+    <ExposeHeader>ETag</ExposeHeader>
+    <ExposeHeader>Content-Length</ExposeHeader>
+    <ExposeHeader>Content-Type</ExposeHeader>
+  </CORSRule>
+</CORSConfiguration>"""
+        client._url_open(
+            "PUT",
+            bucket_name=settings.MINIO_BUCKET_NAME,
+            query_params={"cors": ""},
+            body=cors_config.encode("utf-8"),
+            headers={"Content-Type": "application/xml"},
+        )
+    except Exception:
+        # CORS setting failed — may need manual configuration
+        pass
+
 
 def _sanitize_name_for_path(name: str) -> str:
     """Sanitize a client name for use in file paths."""
