@@ -109,12 +109,12 @@ services:
     labels:
       - "traefik.enable=true"
       # Main backend router (excludes /docs and /redoc)
-      - "traefik.http.routers.backend.rule=(Host(`api.workpartners.co.in`) || PathPrefix(`/api`)) && !PathPrefix(`/docs`) && !PathPrefix(`/redoc`) && !Path(`/openapi.json`)"
+      - "traefik.http.routers.backend.rule=(Host(`api.workpartners.co.in`) || PathPrefix(`/api`)) && !PathPrefix(`/docs`) && !PathPrefix(`/redoc`) && !Path(`/openapi.json`) && !Path(`/api/v1/openapi.json`)"
       - "traefik.http.routers.backend.entrypoints=web"
       - "traefik.http.routers.backend.middlewares=backend-ratelimit@docker"
       - "traefik.http.services.backend.loadbalancer.server.port=8000"
       # Block /docs, /redoc, /openapi.json
-      - "traefik.http.routers.backend-docs-block.rule=Host(`api.workpartners.co.in`) && (PathPrefix(`/docs`) || PathPrefix(`/redoc`) || Path(`/openapi.json`))"
+      - "traefik.http.routers.backend-docs-block.rule=Host(`api.workpartners.co.in`) && (PathPrefix(`/docs`) || PathPrefix(`/redoc`) || Path(`/openapi.json`) || Path(`/api/v1/openapi.json`))"
       - "traefik.http.routers.backend-docs-block.entrypoints=web"
       - "traefik.http.routers.backend-docs-block.middlewares=block-docs@docker"
       - "traefik.http.routers.backend-docs-block.service=backend@docker"
