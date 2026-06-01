@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
 
     # Firm branding (used in emails)
-    FIRM_NAME: str = "PG Joshi & Company"
+    FIRM_NAME: str = "P G Joshi & Co LLP"
     FIRM_WEBSITE: str = "pgjco.com"
     FIRM_PHONE: str = "0712-2524309"
     FRONTEND_URL: str = "https://workpartners.co.in"
