@@ -1,9 +1,9 @@
-"""Model: email_config — Partner-managed email/SMTP configuration."""
+"""Model: email_config — Partner-managed SMTP configuration."""
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.database import Base
@@ -14,12 +14,14 @@ class EmailConfig(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     sender_email = Column(String(255), nullable=False)
-    credentials_json = Column(Text, nullable=False)  # Encrypted OAuth credentials JSON
-    token_json = Column(Text, nullable=True)  # Encrypted OAuth token JSON (after auth)
+    smtp_host = Column(String(255), nullable=False, default="smtp.gmail.com")
+    smtp_port = Column(Integer, nullable=False, default=587)
+    smtp_user = Column(String(255), nullable=False)
+    smtp_password = Column(String(255), nullable=False)
+    use_tls = Column(Boolean, nullable=False, default=True)
     configured_by = Column(UUID(as_uuid=True), nullable=False)
     is_active = Column(
         Boolean,
-        # Only one active config at a time
         default=True,
     )
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)

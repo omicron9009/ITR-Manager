@@ -1,14 +1,12 @@
-"""Service — Email delivery via Google Gmail API (credentials from DB)."""
+"""Service — Email delivery via SMTP (credentials from DB)."""
 
-import asyncio
-import base64
-import json
 import logging
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
+import aiosmtplib
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,8 +15,8 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-async def _get_gmail_service(db: AsyncSession):
-    """Build Gmail API service from DB-stored credentials."""
+async def _get_smtp_config(db: AsyncSession):
+    """Retrieve SMTP configuration from DB."""
     from app.models.email_config import EmailConfig
 
     result = await db.execute(
@@ -26,52 +24,23 @@ async def _get_gmail_service(db: AsyncSession):
     )
     config = result.scalar_one_or_none()
 
-    if not config or not config.credentials_json or not config.token_json:
-        logger.warning("Email not configured — no credentials/token in database")
-        return None, None
+    if not config:
+        logger.warning("Email not configured — no SMTP config in database")
+        return None
 
-    try:
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        from googleapiclient.discovery import build
-
-        token_data = json.loads(config.token_json)
-        creds_data = json.loads(config.credentials_json)
-
-        # Extract client_id and client_secret from the OAuth credentials
-        # (may be under "installed" or "web" key)
-        client_info = creds_data.get("installed") or creds_data.get("web") or {}
-
-        # Ensure token_data has all required fields for from_authorized_user_info
-        if "client_id" not in token_data:
-            token_data["client_id"] = client_info.get("client_id", "")
-        if "client_secret" not in token_data:
-            token_data["client_secret"] = client_info.get("client_secret", "")
-        if "token_uri" not in token_data:
-            token_data["token_uri"] = client_info.get("token_uri", "https://oauth2.googleapis.com/token")
-
-        creds = Credentials.from_authorized_user_info(token_data)
-
-        # Refresh if expired (blocking I/O → run in thread pool)
-        if creds.expired and creds.refresh_token:
-            await asyncio.to_thread(creds.refresh, Request())
-            # Update token in DB
-            config.token_json = creds.to_json()
-            await db.flush()
-
-        # Build service (minor I/O → thread pool)
-        service = await asyncio.to_thread(build, "gmail", "v1", credentials=creds)
-        return service, config.sender_email
-    except Exception as e:
-        logger.error(f"Failed to build Gmail service: {e}")
-        return None, None
+    return config
 
 
-def _send_gmail_message(service, raw_message: str):
-    """Synchronous Gmail API send — to be called via asyncio.to_thread."""
-    return service.users().messages().send(
-        userId="me", body={"raw": raw_message}
-    ).execute()
+async def _send_via_smtp(config, message: MIMEMultipart) -> None:
+    """Send a MIME message using async SMTP."""
+    await aiosmtplib.send(
+        message,
+        hostname=config.smtp_host,
+        port=config.smtp_port,
+        username=config.smtp_user,
+        password=config.smtp_password,
+        start_tls=config.use_tls,
+    )
 
 
 async def send_email(
@@ -82,35 +51,29 @@ async def send_email(
     db: Optional[AsyncSession] = None,
 ) -> bool:
     """
-    Send an email via Google Gmail API using DB-stored credentials.
-    
-    All blocking network I/O is offloaded to a thread pool so the
-    async event loop is never blocked.
+    Send an email via SMTP using DB-stored credentials.
     """
     if db is None:
         logger.warning(f"Email skipped (no db session): to={to_email}, subject={subject}")
         return False
 
-    service, sender_email = await _get_gmail_service(db)
+    config = await _get_smtp_config(db)
 
-    if not service:
+    if not config:
         logger.warning(f"Email skipped (not configured): to={to_email}, subject={subject}")
         return False
 
     try:
-        # Build email message
         message = MIMEMultipart("alternative")
-        message["to"] = to_email
-        message["from"] = sender_email
-        message["subject"] = subject
+        message["To"] = to_email
+        message["From"] = config.sender_email
+        message["Subject"] = subject
 
         if body_text:
             message.attach(MIMEText(body_text, "plain"))
         message.attach(MIMEText(body_html, "html"))
 
-        # Send via Gmail API (blocking HTTP → thread pool)
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        await asyncio.to_thread(_send_gmail_message, service, raw)
+        await _send_via_smtp(config, message)
 
         logger.info(f"Email sent: to={to_email}, subject={subject}")
         return True
@@ -253,22 +216,22 @@ async def send_email_with_attachment(
     body_text: Optional[str] = None,
     db: Optional[AsyncSession] = None,
 ) -> bool:
-    """Send an email with a file attachment via Gmail API."""
+    """Send an email with a file attachment via SMTP."""
     if db is None:
         logger.warning(f"Email skipped (no db session): to={to_email}, subject={subject}")
         return False
 
-    service, sender_email = await _get_gmail_service(db)
+    config = await _get_smtp_config(db)
 
-    if not service:
+    if not config:
         logger.warning(f"Email skipped (not configured): to={to_email}, subject={subject}")
         return False
 
     try:
         message = MIMEMultipart("mixed")
-        message["to"] = to_email
-        message["from"] = sender_email
-        message["subject"] = subject
+        message["To"] = to_email
+        message["From"] = config.sender_email
+        message["Subject"] = subject
 
         # Body part
         body_part = MIMEMultipart("alternative")
@@ -283,8 +246,7 @@ async def send_email_with_attachment(
         attachment.add_header("Content-Disposition", "attachment", filename=attachment_filename)
         message.attach(attachment)
 
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        await asyncio.to_thread(_send_gmail_message, service, raw)
+        await _send_via_smtp(config, message)
 
         logger.info(f"Email with attachment sent: to={to_email}, subject={subject}, file={attachment_filename}")
         return True

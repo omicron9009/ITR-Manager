@@ -356,6 +356,44 @@ async def _sync_new_columns():
                 """)
                 logger.info("Created table 'filing_feedback'")
 
+            # ─── Migrate email_config from OAuth to SMTP ─────────────────
+            email_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'email_config'"
+            )
+            if email_table_exists:
+                # Add new SMTP columns if missing
+                for col, col_type, default in [
+                    ("smtp_host", "VARCHAR(255)", "'smtp.gmail.com'"),
+                    ("smtp_port", "INTEGER", "587"),
+                    ("smtp_user", "VARCHAR(255)", "''"),
+                    ("smtp_password", "VARCHAR(255)", "''"),
+                    ("use_tls", "BOOLEAN", "'true'"),
+                ]:
+                    col_exists = await conn.fetchval(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'email_config' AND column_name = $1",
+                        col,
+                    )
+                    if not col_exists:
+                        await conn.execute(
+                            f'ALTER TABLE "email_config" ADD COLUMN "{col}" {col_type} NOT NULL DEFAULT {default}'
+                        )
+                        logger.info(f"Added column '{col}' to email_config")
+
+                # Drop old OAuth columns if they still exist
+                for old_col in ("credentials_json", "token_json"):
+                    old_exists = await conn.fetchval(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'email_config' AND column_name = $1",
+                        old_col,
+                    )
+                    if old_exists:
+                        await conn.execute(
+                            f'ALTER TABLE "email_config" DROP COLUMN "{old_col}"'
+                        )
+                        logger.info(f"Dropped column '{old_col}' from email_config")
+
         finally:
             await conn.close()
 
