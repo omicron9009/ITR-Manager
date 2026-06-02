@@ -1,4 +1,4 @@
-"""Schemas — Email configuration (Partner-only setup)."""
+"""Schemas — Email configuration (Partner-only SMTP setup)."""
 
 from datetime import datetime
 from typing import Optional
@@ -8,21 +8,24 @@ from pydantic import BaseModel, EmailStr
 
 
 class EmailConfigSetupRequest(BaseModel):
-    """Partner sets up email credentials for the platform."""
+    """Partner sets up SMTP credentials for the platform."""
     sender_email: EmailStr
-    credentials_json: str  # The OAuth client credentials JSON content (from Google Console)
-
-
-class EmailConfigTokenRequest(BaseModel):
-    """Partner provides the OAuth token after authorization flow."""
-    token_json: str  # The OAuth token JSON (after browser auth)
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str
+    smtp_password: str
+    use_tls: bool = True
 
 
 class EmailConfigResponse(BaseModel):
     """Current email configuration status."""
     id: UUID
     sender_email: str
-    is_configured: bool  # True if both credentials and token are set
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    use_tls: bool
+    is_configured: bool
     configured_by: UUID
     created_at: datetime
     updated_at: datetime
@@ -33,9 +36,3 @@ class EmailConfigResponse(BaseModel):
 class EmailConfigTestRequest(BaseModel):
     """Test the email configuration by sending a test email."""
     test_recipient: EmailStr
-
-
-class EmailConfigAuthUrlResponse(BaseModel):
-    """OAuth authorization URL for the partner to complete Gmail auth."""
-    auth_url: str
-    message: str
