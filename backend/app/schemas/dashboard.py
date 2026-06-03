@@ -118,6 +118,14 @@ class DirectoryCompletedDocItem(BaseModel):
     uploaded_at: datetime
 
 
+class DirectoryOtherDocItem(BaseModel):
+    id: UUID
+    file_id: UUID
+    label: Optional[str] = None
+    original_filename: Optional[str] = None
+    uploaded_at: datetime
+
+
 class FilingDirectoryResponse(BaseModel):
     filing_id: UUID
     financial_year: str
@@ -125,6 +133,7 @@ class FilingDirectoryResponse(BaseModel):
     documents_required: list[DirectoryDocumentItem]
     computations: list[DirectoryComputationItem]
     completed_docs: list[DirectoryCompletedDocItem]
+    other_docs: list[DirectoryOtherDocItem] = []
 
 
 # ─── Executive Workload ─────────────────────────────────────

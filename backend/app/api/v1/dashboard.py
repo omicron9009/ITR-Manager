@@ -31,6 +31,7 @@ from app.schemas.dashboard import (
     DirectoryComputationItem,
     DirectoryCompletedDocItem,
     DirectoryDocumentItem,
+    DirectoryOtherDocItem,
     ExecutiveAnalyticsResponse,
     ExecutiveClientDetail,
     ExecutiveClientInfo,
@@ -509,7 +510,13 @@ async def get_filing_directory(
             completed_result = await db.execute(
                 select(FilingCompletedDoc).where(
                     FilingCompletedDoc.filing_id == filing_id,
-                    FilingCompletedDoc.doc_type.in_([CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE]),
+                    FilingCompletedDoc.doc_type.in_([
+                        CompletedDocType.ITR_ACKNOWLEDGEMENT,
+                        CompletedDocType.INVOICE,
+                        CompletedDocType.ITR_FORM,
+                        CompletedDocType.FINANCIAL_STATEMENT,
+                        CompletedDocType.TAX_PAID_COMPUTATION,
+                    ]),
                 )
             )
             completed_docs = completed_result.scalars().all()
@@ -534,6 +541,41 @@ async def get_filing_directory(
                 uploaded_at=cd.uploaded_at,
             ))
 
+    # Other Docs visibility rules:
+    # - Client: only visible after COMPLETED
+    # - Partner/Executive: always visible
+    from app.models.filing_other_doc import FilingOtherDoc
+
+    other_doc_items = []
+    if current_user.role == UserRole.CLIENT:
+        if filing.status == FilingStatus.COMPLETED:
+            other_result = await db.execute(
+                select(FilingOtherDoc).where(FilingOtherDoc.filing_id == filing_id)
+                .order_by(FilingOtherDoc.uploaded_at.desc())
+            )
+            other_docs = other_result.scalars().all()
+        else:
+            other_docs = []
+    elif current_user.role in (UserRole.PARTNER, UserRole.EXECUTIVE):
+        other_result = await db.execute(
+            select(FilingOtherDoc).where(FilingOtherDoc.filing_id == filing_id)
+            .order_by(FilingOtherDoc.uploaded_at.desc())
+        )
+        other_docs = other_result.scalars().all()
+    else:
+        other_docs = []
+
+    for od in other_docs:
+        file_result = await db.execute(select(StoredFile).where(StoredFile.id == od.file_id))
+        stored = file_result.scalar_one_or_none()
+        other_doc_items.append(DirectoryOtherDocItem(
+            id=od.id,
+            file_id=od.file_id,
+            label=od.label,
+            original_filename=stored.original_filename if stored else None,
+            uploaded_at=od.uploaded_at,
+        ))
+
     return FilingDirectoryResponse(
         filing_id=filing.id,
         financial_year=filing.financial_year,
@@ -541,6 +583,7 @@ async def get_filing_directory(
         documents_required=doc_items,
         computations=comp_items,
         completed_docs=completed_items,
+        other_docs=other_doc_items,
     )
 
 

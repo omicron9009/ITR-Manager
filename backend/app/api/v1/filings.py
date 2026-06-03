@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AccountNotActiveError, DuplicateFilingError, OnboardingFormNotSubmittedError
 from app.core.permissions import enforce_client_access, enforce_filing_access
-from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_user
+from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_user,get_current_manager_or_partner
 from app.database import get_db
 from app.enums import AccountStatus, AuditEventType, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -908,10 +908,10 @@ async def submit_documents(
 async def mark_payment_received(
     filing_id: UUID,
     request: Request,
-    current_user: User = Depends(get_current_manager_executive_or_partner),
+    current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Mark payment as received (Manager/Executive/Partner action). Transitions to COMPLETED."""
+    """Mark payment as received (Manager/Partner action). Transitions to COMPLETED."""
     result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = result.scalar_one_or_none()
     if not filing:

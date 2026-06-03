@@ -356,6 +356,28 @@ async def _sync_new_columns():
                 """)
                 logger.info("Created table 'filing_feedback'")
 
+            # Ensure filing_other_docs table exists (for existing deployments)
+            other_docs_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'filing_other_docs'"
+            )
+            if not other_docs_table_exists:
+                await conn.execute("""
+                    CREATE TABLE filing_other_docs (
+                        id UUID PRIMARY KEY,
+                        filing_id UUID NOT NULL REFERENCES itr_filings(id) ON DELETE CASCADE,
+                        file_id UUID NOT NULL REFERENCES stored_files(id) ON DELETE RESTRICT,
+                        label VARCHAR(255),
+                        uploaded_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """)
+                await conn.execute(
+                    'CREATE INDEX "ix_filing_other_docs_filing_id" ON "filing_other_docs" ("filing_id")'
+                )
+                logger.info("Created table 'filing_other_docs'")
+
             # ─── Migrate email_config from OAuth to SMTP ─────────────────
             email_table_exists = await conn.fetchval(
                 "SELECT 1 FROM information_schema.tables "
