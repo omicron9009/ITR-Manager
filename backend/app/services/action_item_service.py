@@ -11,6 +11,7 @@ from app.enums import (
     AccountStatus,
     ActionItemPriority,
     ActionItemType,
+    CompletedDocStatus,
     CompletedDocType,
     ComputationStatus,
     DocumentStatus,
@@ -168,6 +169,42 @@ async def _get_partner_items(
                 )
             )
 
+    # PARTNER_APPROVE_COMPLETED_DOCS — completed docs awaiting partner approval
+    stmt = (
+        select(ITRFiling)
+        .options(
+            selectinload(ITRFiling.client),
+            selectinload(ITRFiling.completed_docs),
+        )
+        .where(ITRFiling.status == FilingStatus.FILING)
+    )
+    if filing_id_filter:
+        stmt = stmt.where(ITRFiling.id == filing_id_filter)
+
+    result = await db.execute(stmt)
+    filings_for_doc_approval = result.scalars().unique().all()
+    for filing in filings_for_doc_approval:
+        client_name = filing.client.full_name if filing.client else "Client"
+        # Partner can approve from UPLOADED (bypass) or MANAGER_APPROVED
+        docs_awaiting = [
+            cd for cd in filing.completed_docs
+            if cd.status in (CompletedDocStatus.UPLOADED, CompletedDocStatus.MANAGER_APPROVED)
+        ]
+        if docs_awaiting:
+            items.append(
+                ActionItemResponse(
+                    type=ActionItemType.PARTNER_APPROVE_COMPLETED_DOCS,
+                    title="Approve filed documents",
+                    description=f"{len(docs_awaiting)} document(s) for {client_name} FY {filing.financial_year} await final approval",
+                    priority=ActionItemPriority.HIGH,
+                    related_filing_id=filing.id,
+                    related_client_id=filing.client_id,
+                    financial_year=filing.financial_year,
+                    metadata={"pending_count": len(docs_awaiting), "doc_types": [cd.doc_type.value for cd in docs_awaiting]},
+                    action_url=f"/filings/{filing.id}/completed-docs",
+                )
+            )
+
     return items
 
 
@@ -289,6 +326,42 @@ async def _get_manager_items(
                         related_client_id=filing.client_id,
                         financial_year=filing.financial_year,
                         action_url=f"/filings/{filing.id}/computation",
+                    )
+                )
+
+    # Manager-specific: MANAGER_APPROVE_COMPLETED_DOCS — completed docs awaiting manager approval
+    if team_client_ids or filing_id_filter:
+        stmt = (
+            select(ITRFiling)
+            .options(
+                selectinload(ITRFiling.client),
+                selectinload(ITRFiling.completed_docs),
+            )
+            .where(ITRFiling.status == FilingStatus.FILING)
+        )
+        if filing_id_filter:
+            stmt = stmt.where(ITRFiling.id == filing_id_filter)
+        elif team_client_ids:
+            stmt = stmt.where(ITRFiling.client_id.in_(team_client_ids))
+
+        result = await db.execute(stmt)
+        filings_for_doc_approval = result.scalars().unique().all()
+
+        for filing in filings_for_doc_approval:
+            client_name = filing.client.full_name if filing.client else "Client"
+            docs_awaiting = [cd for cd in filing.completed_docs if cd.status == CompletedDocStatus.UPLOADED]
+            if docs_awaiting:
+                items.append(
+                    ActionItemResponse(
+                        type=ActionItemType.MANAGER_APPROVE_COMPLETED_DOCS,
+                        title="Review filed documents",
+                        description=f"{len(docs_awaiting)} document(s) for {client_name} FY {filing.financial_year} await your approval",
+                        priority=ActionItemPriority.HIGH,
+                        related_filing_id=filing.id,
+                        related_client_id=filing.client_id,
+                        financial_year=filing.financial_year,
+                        metadata={"pending_count": len(docs_awaiting), "doc_types": [cd.doc_type.value for cd in docs_awaiting]},
+                        action_url=f"/filings/{filing.id}/completed-docs",
                     )
                 )
 
@@ -477,6 +550,24 @@ async def _get_filing_items_for_staff(
                             "uploaded_count": len(existing_types),
                             "required_count": len(_REQUIRED_COMPLETED_DOCS),
                         },
+                        action_url=f"/filings/{filing.id}/completed-docs",
+                    )
+                )
+
+            # 8b. REVISE_COMPLETED_DOC — a doc was rejected, executive needs to re-upload
+            rejected_docs = [cd for cd in filing.completed_docs if cd.status == CompletedDocStatus.MANAGER_REJECTED]
+            for rd in rejected_docs:
+                items.append(
+                    ActionItemResponse(
+                        type=ActionItemType.REVISE_COMPLETED_DOC,
+                        title="Re-upload rejected document",
+                        description=f"{rd.doc_type.value} for {client_name} FY {filing.financial_year} was rejected. "
+                                    f"Reason: {rd.rejection_reason or 'N/A'}. Please re-upload.",
+                        priority=ActionItemPriority.HIGH,
+                        related_filing_id=filing.id,
+                        related_client_id=filing.client_id,
+                        financial_year=filing.financial_year,
+                        metadata={"doc_type": rd.doc_type.value, "rejection_reason": rd.rejection_reason},
                         action_url=f"/filings/{filing.id}/completed-docs",
                     )
                 )

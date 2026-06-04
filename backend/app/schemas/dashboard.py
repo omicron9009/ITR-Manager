@@ -22,9 +22,16 @@ class ComputationSubStateCounter(BaseModel):
     count: int
 
 
+class FilingDocSubStateCounter(BaseModel):
+    sub_status: str
+    raw_status: str
+    count: int
+
+
 class DashboardSummaryResponse(BaseModel):
     counters: list[FilingStatusCounter]
     computation_sub_counters: list[ComputationSubStateCounter] = []
+    filing_doc_sub_counters: list[FilingDocSubStateCounter] = []
     total_clients: int
     pending_verification_count: int
     total_active_filings: int
@@ -114,6 +121,7 @@ class DirectoryComputationItem(BaseModel):
 class DirectoryCompletedDocItem(BaseModel):
     id: UUID
     doc_type: str
+    status: str = "UPLOADED"
     original_filename: Optional[str] = None
     uploaded_at: datetime
 

@@ -8,9 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.file_validation import validate_file_size, validate_file_type
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_active_client, get_current_user
+from app.core.security import get_current_active_client, get_current_manager_or_partner, get_current_user
 from app.database import get_db
-from app.enums import CompletedDocType, FilingStatus, FormFieldType, UserRole
+from app.enums import CompletedDocStatus, CompletedDocType, FilingStatus, FormFieldType, UserRole
 from app.models.filing import ITRFiling
 from app.models.filing_completed_doc import FilingCompletedDoc
 from app.models.onboarding_form_field import OnboardingFormField
@@ -387,12 +387,22 @@ async def confirm_completed_doc_upload(
         existing_doc.file_id = stored_file.id
         existing_doc.uploaded_by = current_user.id
         existing_doc.uploaded_at = datetime.utcnow()
+        existing_doc.status = CompletedDocStatus.UPLOADED
+        # Reset approval fields on re-upload
+        existing_doc.manager_approved_by = None
+        existing_doc.manager_approved_at = None
+        existing_doc.manager_rejected_by = None
+        existing_doc.manager_rejected_at = None
+        existing_doc.rejection_reason = None
+        existing_doc.partner_approved_by = None
+        existing_doc.partner_approved_at = None
     else:
         completed_doc = FilingCompletedDoc(
             filing_id=filing_id,
             doc_type=doc_type,
             file_id=stored_file.id,
             uploaded_by=current_user.id,
+            status=CompletedDocStatus.UPLOADED,
         )
         db.add(completed_doc)
 
@@ -435,9 +445,8 @@ async def confirm_completed_doc_upload(
             details={"doc_type": doc_type.value, "filename": filename},
         )
 
-    # Check if all required completed docs are uploaded — only then transition to PAYMENT
-    # Required: ITR_ACKNOWLEDGEMENT, INVOICE, ITR_JSON, ITR_FORM
-    # Optional: FINANCIAL_STATEMENT (not required for transition)
+    # Check if all required completed docs are uploaded — notify manager for approval
+    # FILING→PAYMENT transition now requires all docs to be PARTNER_APPROVED (handled in approval endpoints)
     if filing.status == FilingStatus.FILING:
         required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
         existing_docs_result = await db.execute(
@@ -446,29 +455,31 @@ async def confirm_completed_doc_upload(
         existing_types = {row[0] for row in existing_docs_result.all()}
         missing_types = required_doc_types - existing_types
 
+        # Notify manager if all required docs uploaded (awaiting approval)
         if not missing_types:
-            # All required docs uploaded → transition to PAYMENT
-            await transition_filing_status(
-                db=db,
-                filing=filing,
-                to_status=FilingStatus.PAYMENT,
-                changed_by=current_user.id,
-                remarks="ITR filed - all required documents uploaded (Acknowledgement, Invoice, ITR JSON, ITR Form, Tax Paid Computation)",
+            from app.models.manager_client_assignment import ManagerClientAssignment
+            mgr_result = await db.execute(
+                select(ManagerClientAssignment).where(
+                    ManagerClientAssignment.client_id == filing.client_id,
+                    ManagerClientAssignment.is_active == True,
+                )
             )
-
-            await create_notification(
-                db=db,
-                user_id=filing.client_id,
-                title="ITR Filed Successfully",
-                message=f"Your ITR for {filing.financial_year} has been filed. Please complete payment.",
-                related_filing_id=filing_id,
-            )
+            mgr_assignment = mgr_result.scalar_one_or_none()
+            if mgr_assignment:
+                await create_notification(
+                    db=db,
+                    user_id=mgr_assignment.manager_id,
+                    title="Filed Documents Ready for Review",
+                    message=f"All required filed documents have been uploaded for {client_user.full_name if client_user else 'client'} ({filing.financial_year}). Please review and approve.",
+                    related_filing_id=filing_id,
+                )
 
         await db.flush()
         remaining = [t.value for t in (required_doc_types - existing_types)]
         return {
-            "message": f"{doc_type.value} uploaded successfully",
+            "message": f"{doc_type.value} uploaded successfully. Awaiting manager/partner approval.",
             "file_id": str(stored_file.id),
+            "status": CompletedDocStatus.UPLOADED.value,
             "remaining_docs": remaining,
             "all_docs_uploaded": len(remaining) == 0,
         }
@@ -485,7 +496,7 @@ async def get_completed_docs(
     db: AsyncSession = Depends(get_db),
 ):
     """Get completed docs (acknowledgement, invoice) for a filing.
-    Clients can only see these once filing is COMPLETED.
+    Clients can only see PARTNER_APPROVED docs after filing is COMPLETED.
     """
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = filing_result.scalar_one_or_none()
@@ -494,14 +505,13 @@ async def get_completed_docs(
 
     await enforce_client_access(db, current_user, filing.client_id)
 
-    # Clients can only view filed documents after COMPLETED state
-    # Exception: Invoice is visible as soon as it's uploaded (any state)
+    # Clients can only view PARTNER_APPROVED docs after COMPLETED state
     if current_user.role == UserRole.CLIENT:
         if filing.status == FilingStatus.COMPLETED:
-            # Show all completed docs once filing is completed
             result = await db.execute(
                 select(FilingCompletedDoc).where(
                     FilingCompletedDoc.filing_id == filing_id,
+                    FilingCompletedDoc.status == CompletedDocStatus.PARTNER_APPROVED,
                     FilingCompletedDoc.doc_type.in_([
                         CompletedDocType.ITR_ACKNOWLEDGEMENT,
                         CompletedDocType.INVOICE,
@@ -512,11 +522,12 @@ async def get_completed_docs(
                 )
             )
         else:
-            # Before COMPLETED, only show Invoice if it exists
+            # Before COMPLETED, only show PARTNER_APPROVED Invoice if it exists
             result = await db.execute(
                 select(FilingCompletedDoc).where(
                     FilingCompletedDoc.filing_id == filing_id,
                     FilingCompletedDoc.doc_type == CompletedDocType.INVOICE,
+                    FilingCompletedDoc.status == CompletedDocStatus.PARTNER_APPROVED,
                 )
             )
     else:
@@ -538,9 +549,223 @@ async def get_completed_docs(
             "file_size": stored.file_size_bytes if stored else None,
             "uploaded_by": str(doc.uploaded_by),
             "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+            "status": doc.status.value if doc.status else "UPLOADED",
+            "manager_approved_by": str(doc.manager_approved_by) if doc.manager_approved_by else None,
+            "manager_approved_at": doc.manager_approved_at.isoformat() if doc.manager_approved_at else None,
+            "partner_approved_by": str(doc.partner_approved_by) if doc.partner_approved_by else None,
+            "partner_approved_at": doc.partner_approved_at.isoformat() if doc.partner_approved_at else None,
+            "rejection_reason": doc.rejection_reason,
         })
 
     return items
+
+
+# ─── POST /storage/completed-doc/manager-approve ─────────────
+@router.post("/completed-doc/manager-approve", response_model=dict)
+async def manager_approve_completed_doc(
+    doc_id: UUID = Query(...),
+    current_user: User = Depends(get_current_manager_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manager/Partner approves a completed doc: UPLOADED → MANAGER_APPROVED."""
+    from datetime import datetime
+    from app.services.audit_service import record_audit_event
+    from app.enums import AuditEventType
+    from app.services.notification_service import create_notification
+
+    doc_result = await db.execute(select(FilingCompletedDoc).where(FilingCompletedDoc.id == doc_id))
+    doc = doc_result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Completed document not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_client_access(db, current_user, filing.client_id)
+
+    if doc.status != CompletedDocStatus.UPLOADED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot approve: document is in '{doc.status.value}' status. Only 'UPLOADED' documents can be manager-approved.",
+        )
+
+    doc.status = CompletedDocStatus.MANAGER_APPROVED
+    doc.manager_approved_by = current_user.id
+    doc.manager_approved_at = datetime.utcnow()
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.DOCUMENT_APPROVED,
+        actor_id=current_user.id,
+        client_id=filing.client_id,
+        filing_id=filing.id,
+        document_id=doc.id,
+        details={"type": "completed_doc", "doc_type": doc.doc_type.value, "level": "manager"},
+    )
+
+    # Notify partner
+    partner_result = await db.execute(
+        select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+    )
+    partner = partner_result.scalar_one_or_none()
+    if partner:
+        await create_notification(
+            db=db,
+            user_id=partner.id,
+            title="Filed Document Approved by Manager",
+            message=f"{doc.doc_type.value} for {filing.financial_year} has been approved by {current_user.full_name}. Awaiting your final approval.",
+            related_filing_id=filing.id,
+        )
+
+    await db.commit()
+    return {"message": f"{doc.doc_type.value} manager-approved successfully", "status": doc.status.value}
+
+
+# ─── POST /storage/completed-doc/partner-approve ─────────────
+@router.post("/completed-doc/partner-approve", response_model=dict)
+async def partner_approve_completed_doc(
+    doc_id: UUID = Query(...),
+    current_user: User = Depends(get_current_manager_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Partner approves a completed doc: UPLOADED/MANAGER_APPROVED → PARTNER_APPROVED.
+    Partner can bypass manager approval.
+    """
+    from datetime import datetime
+    from app.services.audit_service import record_audit_event
+    from app.services.filing_service import transition_filing_status
+    from app.services.notification_service import create_notification
+    from app.enums import AuditEventType
+
+    if current_user.role != UserRole.PARTNER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Partner can give final approval")
+
+    doc_result = await db.execute(select(FilingCompletedDoc).where(FilingCompletedDoc.id == doc_id))
+    doc = doc_result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Completed document not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_client_access(db, current_user, filing.client_id)
+
+    if doc.status not in (CompletedDocStatus.UPLOADED, CompletedDocStatus.MANAGER_APPROVED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot approve: document is in '{doc.status.value}' status. Only 'UPLOADED' or 'MANAGER_APPROVED' documents can be partner-approved.",
+        )
+
+    doc.status = CompletedDocStatus.PARTNER_APPROVED
+    doc.partner_approved_by = current_user.id
+    doc.partner_approved_at = datetime.utcnow()
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.DOCUMENT_APPROVED,
+        actor_id=current_user.id,
+        client_id=filing.client_id,
+        filing_id=filing.id,
+        document_id=doc.id,
+        details={"type": "completed_doc", "doc_type": doc.doc_type.value, "level": "partner"},
+    )
+
+    await db.flush()
+
+    # Check if ALL required docs are now PARTNER_APPROVED → auto-transition to PAYMENT
+    if filing.status == FilingStatus.FILING:
+        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
+        approved_result = await db.execute(
+            select(FilingCompletedDoc.doc_type).where(
+                FilingCompletedDoc.filing_id == filing.id,
+                FilingCompletedDoc.status == CompletedDocStatus.PARTNER_APPROVED,
+            )
+        )
+        approved_types = {row[0] for row in approved_result.all()}
+
+        if required_doc_types.issubset(approved_types):
+            await transition_filing_status(
+                db=db,
+                filing=filing,
+                to_status=FilingStatus.PAYMENT,
+                changed_by=current_user.id,
+                remarks="All required filed documents partner-approved",
+            )
+            await create_notification(
+                db=db,
+                user_id=filing.client_id,
+                title="ITR Filed Successfully",
+                message=f"Your ITR for {filing.financial_year} has been filed. Please complete payment.",
+                related_filing_id=filing.id,
+            )
+
+    await db.commit()
+    return {"message": f"{doc.doc_type.value} partner-approved successfully", "status": doc.status.value}
+
+
+# ─── POST /storage/completed-doc/manager-reject ──────────────
+@router.post("/completed-doc/manager-reject", response_model=dict)
+async def manager_reject_completed_doc(
+    doc_id: UUID = Query(...),
+    reason: str = Query(..., min_length=1),
+    current_user: User = Depends(get_current_manager_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manager/Partner rejects a completed doc: UPLOADED → MANAGER_REJECTED (staff re-uploads)."""
+    from datetime import datetime
+    from app.services.audit_service import record_audit_event
+    from app.services.notification_service import create_notification
+    from app.enums import AuditEventType
+
+    doc_result = await db.execute(select(FilingCompletedDoc).where(FilingCompletedDoc.id == doc_id))
+    doc = doc_result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Completed document not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_client_access(db, current_user, filing.client_id)
+
+    if doc.status != CompletedDocStatus.UPLOADED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot reject: document is in '{doc.status.value}' status. Only 'UPLOADED' documents can be rejected.",
+        )
+
+    doc.status = CompletedDocStatus.MANAGER_REJECTED
+    doc.manager_rejected_by = current_user.id
+    doc.manager_rejected_at = datetime.utcnow()
+    doc.rejection_reason = reason
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.DOCUMENT_REJECTED,
+        actor_id=current_user.id,
+        client_id=filing.client_id,
+        filing_id=filing.id,
+        document_id=doc.id,
+        details={"type": "completed_doc", "doc_type": doc.doc_type.value, "reason": reason},
+    )
+
+    # Notify uploader (executive)
+    if doc.uploaded_by:
+        await create_notification(
+            db=db,
+            user_id=doc.uploaded_by,
+            title="Filed Document Rejected",
+            message=f"{doc.doc_type.value} for {filing.financial_year} was rejected. Reason: {reason}. Please re-upload.",
+            related_filing_id=filing.id,
+        )
+
+    await db.commit()
+    return {"message": f"{doc.doc_type.value} rejected", "status": doc.status.value, "reason": reason}
 
 
 # ─── GET /storage/{file_id}/download-url ─────────────────────

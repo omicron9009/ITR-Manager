@@ -48,6 +48,7 @@ class FilingResponse(BaseModel):
     completed_at: Optional[datetime] = None
     halted_at: Optional[datetime] = None
     halt_reason: Optional[str] = None
+    has_internal_workings: bool = False
     created_at: datetime
     updated_at: datetime
 
