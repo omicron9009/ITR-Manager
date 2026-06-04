@@ -213,27 +213,31 @@ async def _send_engagement_letter_email(
     pdf_bytes: bytes,
 ):
     """Background task: email engagement letter PDF to client."""
+    import html
+
     from app.database import AsyncSessionLocal
     from app.services.email_service import send_email_with_attachment
     from app.config import settings
 
+    safe_name = html.escape(client_name)
+    safe_fy = html.escape(financial_year)
     subject = f"Engagement Letter - ITR Filing {financial_year}"
     html_body = f"""
     <html>
     <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #1a56db; padding: 20px; color: white; text-align: center;">
-            <h2>{settings.APP_NAME}</h2>
+            <h2>{html.escape(settings.APP_NAME)}</h2>
         </div>
         <div style="padding: 20px; border: 1px solid #e5e7eb;">
-            <h3>Engagement Letter - {financial_year}</h3>
-            <p>Dear {client_name},</p>
-            <p>Thank you for initiating your ITR filing for the financial year {financial_year}.</p>
+            <h3>Engagement Letter - {safe_fy}</h3>
+            <p>Dear {safe_name},</p>
+            <p>Thank you for initiating your ITR filing for the financial year {safe_fy}.</p>
             <p>Please find attached your signed Engagement Letter for Income Tax Return Filing Services
             with P G Joshi and Co LLP.</p>
             <p>This document confirms your acceptance of the terms of engagement.</p>
             <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
             <p style="color: #6b7280; font-size: 12px;">
-                This is an automated email from {settings.APP_NAME}. Please retain this for your records.
+                This is an automated email from {html.escape(settings.APP_NAME)}. Please retain this for your records.
             </p>
         </div>
     </body>

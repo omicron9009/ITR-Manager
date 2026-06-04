@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.file_validation import validate_file_size, validate_file_type
+from app.core.file_validation import sanitize_filename, validate_file_size, validate_file_type
 from app.core.permissions import enforce_filing_access
 from app.core.security import (
     get_current_active_client,
@@ -49,6 +49,7 @@ async def get_computation_upload_url(
 ):
     """Get a pre-signed URL to upload a computation document (Executive/Partner)."""
     # Validate file type
+    body.filename = sanitize_filename(body.filename)
     validate_file_type(body.filename, body.content_type)
 
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == body.filing_id))
@@ -123,6 +124,7 @@ async def confirm_computation_upload(
 ):
     """Confirm computation upload after file is in MinIO."""
     # Validate file type and size
+    filename = sanitize_filename(filename)
     validate_file_type(filename, content_type)
     validate_file_size(file_size)
 

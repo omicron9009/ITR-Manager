@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.file_validation import validate_file_size, validate_file_type
+from app.core.file_validation import sanitize_filename, validate_file_size, validate_file_type
 from app.core.permissions import enforce_filing_access
 from app.core.security import get_current_manager_executive_or_partner
 from app.database import get_db
@@ -35,6 +35,7 @@ async def get_internal_working_upload_url(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a pre-signed URL to upload an internal working document."""
+    body.filename = sanitize_filename(body.filename)
     validate_file_type(body.filename, body.content_type)
 
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == body.filing_id))
@@ -83,6 +84,7 @@ async def confirm_internal_working_upload(
     db: AsyncSession = Depends(get_db),
 ):
     """Confirm internal working upload after file is in MinIO."""
+    filename = sanitize_filename(filename)
     validate_file_type(filename, content_type)
     validate_file_size(file_size)
 
