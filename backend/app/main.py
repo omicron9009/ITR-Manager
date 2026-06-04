@@ -401,6 +401,33 @@ async def _sync_new_columns():
                 )
                 logger.info("Created table 'internal_working_docs'")
 
+            # Ensure viewer_completed_queue table exists
+            vcq_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'viewer_completed_queue'"
+            )
+            if not vcq_table_exists:
+                await conn.execute("""
+                    CREATE TABLE viewer_completed_queue (
+                        id UUID PRIMARY KEY,
+                        viewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        filing_id UUID NOT NULL REFERENCES itr_filings(id) ON DELETE CASCADE,
+                        client_name VARCHAR(255) NOT NULL,
+                        financial_year VARCHAR(20) NOT NULL,
+                        completed_at TIMESTAMPTZ NOT NULL,
+                        completed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        dismissed_at TIMESTAMPTZ
+                    )
+                """)
+                await conn.execute(
+                    'CREATE INDEX "ix_viewer_completed_queue_viewer_id" ON "viewer_completed_queue" ("viewer_id")'
+                )
+                await conn.execute(
+                    'CREATE INDEX "ix_viewer_completed_queue_undismissed" ON "viewer_completed_queue" ("viewer_id") WHERE dismissed_at IS NULL'
+                )
+                logger.info("Created table 'viewer_completed_queue'")
+
             # ─── Add completed_doc_status enum and approval columns ──────
             # Create the enum type if it doesn't exist
             enum_exists = await conn.fetchval(

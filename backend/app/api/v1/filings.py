@@ -213,27 +213,31 @@ async def _send_engagement_letter_email(
     pdf_bytes: bytes,
 ):
     """Background task: email engagement letter PDF to client."""
+    import html
+
     from app.database import AsyncSessionLocal
     from app.services.email_service import send_email_with_attachment
     from app.config import settings
 
+    safe_name = html.escape(client_name)
+    safe_fy = html.escape(financial_year)
     subject = f"Engagement Letter - ITR Filing {financial_year}"
     html_body = f"""
     <html>
     <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #1a56db; padding: 20px; color: white; text-align: center;">
-            <h2>{settings.APP_NAME}</h2>
+            <h2>{html.escape(settings.APP_NAME)}</h2>
         </div>
         <div style="padding: 20px; border: 1px solid #e5e7eb;">
-            <h3>Engagement Letter - {financial_year}</h3>
-            <p>Dear {client_name},</p>
-            <p>Thank you for initiating your ITR filing for the financial year {financial_year}.</p>
+            <h3>Engagement Letter - {safe_fy}</h3>
+            <p>Dear {safe_name},</p>
+            <p>Thank you for initiating your ITR filing for the financial year {safe_fy}.</p>
             <p>Please find attached your signed Engagement Letter for Income Tax Return Filing Services
             with P G Joshi and Co LLP.</p>
             <p>This document confirms your acceptance of the terms of engagement.</p>
             <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
             <p style="color: #6b7280; font-size: 12px;">
-                This is an automated email from {settings.APP_NAME}. Please retain this for your records.
+                This is an automated email from {html.escape(settings.APP_NAME)}. Please retain this for your records.
             </p>
         </div>
     </body>
@@ -974,6 +978,30 @@ async def mark_payment_received(
         action_url_path=f"/filings/{filing.id}",
         cta_label="View Filing & Download Documents",
     )
+
+    # Queue for dashboard viewers
+    from app.models.viewer_completed_queue import ViewerCompletedQueue
+
+    viewer_result = await db.execute(
+        select(User).where(User.role == UserRole.DASHBOARD_USER, User.is_active == True)
+    )
+    viewers = viewer_result.scalars().all()
+
+    # Get client name
+    client_result = await db.execute(select(User.full_name).where(User.id == filing.client_id))
+    client_name = client_result.scalar_one_or_none() or "Client"
+
+    for viewer in viewers:
+        db.add(ViewerCompletedQueue(
+            viewer_id=viewer.id,
+            filing_id=filing.id,
+            client_name=client_name,
+            financial_year=filing.financial_year,
+            completed_at=filing.completed_at,
+            completed_by=current_user.id,
+        ))
+
+    await db.commit()
 
     return {"message": "Payment received. Filing marked as completed.", "status": filing.status.value}
 

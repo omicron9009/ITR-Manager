@@ -1,5 +1,5 @@
 """Core — File upload validation helpers."""
-
+import re
 from fastapi import HTTPException, status
 
 # Maximum file size: 10 MB
@@ -59,3 +59,34 @@ def validate_file_size(file_size: int) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"File size ({file_size} bytes) exceeds maximum allowed size of 10 MB.",
         )
+
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize a user-provided filename to prevent path traversal and injection.
+
+    - Strips directory components (path traversal)
+    - Removes null bytes
+    - Removes HTML/script-dangerous characters
+    - Collapses whitespace
+    - Truncates to 255 characters
+
+    Raises HTTPException 422 if the filename is empty after sanitization.
+    """
+    # Remove null bytes
+    filename = filename.replace("\x00", "")
+    # Take only the basename (strip any path separators)
+    filename = filename.replace("\\", "/")
+    filename = filename.rsplit("/", 1)[-1]
+    # Remove characters dangerous for HTML or filesystem: < > " ' & | ; ` $ { }
+    filename = re.sub(r'[<>"\'&|;`${}]', "", filename)
+    # Collapse whitespace
+    filename = re.sub(r"\s+", " ", filename).strip()
+    # Truncate
+    filename = filename[:255]
+
+    if not filename or filename == "." or filename == "..":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid filename after sanitization.",
+        )
+    return filename

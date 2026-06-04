@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_partner, get_current_user, hash_password
+from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_partner, get_current_user, hash_password
 from app.database import get_db
 from app.enums import AccountStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -25,6 +25,8 @@ from app.schemas.user import (
     ClientRegistrationRequest,
     ClientRegistrationResponse,
     ClientRejectionRequest,
+    IncomeHeadsResponse,
+    IncomeHeadsUpdateRequest,
 )
 from app.services.client_service import activate_client, register_client, reject_client
 
@@ -256,6 +258,35 @@ async def list_clients(
         )
 
     return ClientListResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+# ─── PUT /clients/me/income-heads ────────────────────────────
+@router.put("/me/income-heads", response_model=IncomeHeadsResponse)
+async def update_my_income_heads(
+    body: IncomeHeadsUpdateRequest,
+    current_user: User = Depends(get_current_active_client),
+    db: AsyncSession = Depends(get_db),
+):
+    """Client updates their own income heads (partial update)."""
+    from app.models.client_income_heads import ClientIncomeHeads
+
+    result = await db.execute(
+        select(ClientIncomeHeads).where(ClientIncomeHeads.user_id == current_user.id)
+    )
+    heads = result.scalar_one_or_none()
+
+    if not heads:
+        # Create if not exists (edge case: legacy accounts)
+        heads = ClientIncomeHeads(user_id=current_user.id)
+        db.add(heads)
+
+    update_data = body.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(heads, key, value)
+
+    await db.commit()
+    await db.refresh(heads)
+    return heads
 
 
 # ─── GET /clients/{client_id} ───────────────────────────────

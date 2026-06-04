@@ -328,3 +328,24 @@ class ClientAnalyticsResponse(BaseModel):
     total_approved: int
     total_pending: int
     total_rejected: int
+
+
+# ─── Viewer Completed Queue ─────────────────────────────────
+class CompletedQueueItem(BaseModel):
+    id: UUID
+    filing_id: UUID
+    client_name: str
+    financial_year: str
+    completed_at: datetime
+    completed_by_name: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class CompletedQueueResponse(BaseModel):
+    items: list[CompletedQueueItem]
+    count: int
+
+
+class DismissQueueRequest(BaseModel):
+    queue_id: UUID

@@ -166,6 +166,25 @@ class IncomeHeadsResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class IncomeHeadsUpdateRequest(BaseModel):
+    """Update income heads — all fields optional for partial update."""
+    salary: Optional[bool] = None
+    esop: Optional[bool] = None
+    rental_income: Optional[bool] = None
+    more_than_2_properties: Optional[bool] = None
+    capital_gain_shares: Optional[bool] = None
+    capital_gain_land: Optional[bool] = None
+    business_profession: Optional[bool] = None
+    interest_dividend: Optional[bool] = None
+    foreign_assets: Optional[bool] = None
+    any_other: Optional[bool] = None
+
+
+class ProfileUpdateRequest(BaseModel):
+    """Update user profile (name)."""
+    full_name: str = Field(..., min_length=1, max_length=255)
+
+
 class ClientProfileResponse(BaseModel):
     id: UUID
     user_id: UUID

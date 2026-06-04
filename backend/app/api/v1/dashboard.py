@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_active_client, get_current_manager_executive_or_partner, get_current_executive_or_partner, get_current_partner, get_current_user
+from app.core.security import get_current_active_client, get_current_manager_executive_or_partner, get_current_executive_or_partner, get_current_partner, get_current_user, get_current_dashboard_user_or_partner
 from app.database import get_db
 from app.enums import AccountStatus, CompletedDocStatus, CompletedDocType, ComputationStatus, DocumentStatus, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -48,8 +48,12 @@ from app.schemas.dashboard import (
     PartnerAnalyticsResponse,
     PendingVerificationItem,
     PendingVerificationResponse,
+    CompletedQueueItem,
+    CompletedQueueResponse,
+    DismissQueueRequest,
 )
 from app.models.master_document_type import MasterDocumentType
+from app.models.viewer_completed_queue import ViewerCompletedQueue
 from app.services.filing_service import calculate_progress_percentage
 
 router = APIRouter()
@@ -1172,3 +1176,90 @@ async def get_client_analytics(
         total_pending=total_pending,
         total_rejected=total_rejected,
     )
+
+
+# ═══════════════════════════════════════════════════════════════
+# VIEWER COMPLETED QUEUE (Dashboard User / Partner)
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.get("/completed-queue", response_model=CompletedQueueResponse)
+async def get_completed_queue(
+    current_user: User = Depends(get_current_dashboard_user_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all pending (undismissed) completed filings for the logged-in viewer."""
+    result = await db.execute(
+        select(ViewerCompletedQueue)
+        .where(
+            ViewerCompletedQueue.viewer_id == current_user.id,
+            ViewerCompletedQueue.dismissed_at.is_(None),
+        )
+        .order_by(ViewerCompletedQueue.completed_at.desc())
+    )
+    rows = result.scalars().all()
+
+    items = []
+    for row in rows:
+        # Get completed_by name
+        completed_by_name = None
+        if row.completed_by:
+            user_result = await db.execute(select(User.full_name).where(User.id == row.completed_by))
+            completed_by_name = user_result.scalar_one_or_none()
+
+        items.append(CompletedQueueItem(
+            id=row.id,
+            filing_id=row.filing_id,
+            client_name=row.client_name,
+            financial_year=row.financial_year,
+            completed_at=row.completed_at,
+            completed_by_name=completed_by_name,
+        ))
+
+    return CompletedQueueResponse(items=items, count=len(items))
+
+
+@router.post("/completed-queue/dismiss", response_model=dict)
+async def dismiss_completed_queue_item(
+    body: DismissQueueRequest,
+    current_user: User = Depends(get_current_dashboard_user_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss a single item from the completed queue."""
+    from datetime import datetime, timezone
+    from fastapi import HTTPException, status
+
+    result = await db.execute(
+        select(ViewerCompletedQueue).where(
+            ViewerCompletedQueue.id == body.queue_id,
+            ViewerCompletedQueue.viewer_id == current_user.id,
+        )
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Queue item not found")
+
+    item.dismissed_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"message": "Item dismissed"}
+
+
+@router.post("/completed-queue/dismiss-all", response_model=dict)
+async def dismiss_all_completed_queue(
+    current_user: User = Depends(get_current_dashboard_user_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss all pending items from the completed queue."""
+    from datetime import datetime, timezone
+    from sqlalchemy import update
+
+    await db.execute(
+        update(ViewerCompletedQueue)
+        .where(
+            ViewerCompletedQueue.viewer_id == current_user.id,
+            ViewerCompletedQueue.dismissed_at.is_(None),
+        )
+        .values(dismissed_at=datetime.now(timezone.utc))
+    )
+    await db.commit()
+    return {"message": "All items dismissed"}

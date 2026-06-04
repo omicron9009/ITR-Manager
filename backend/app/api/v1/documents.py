@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.file_validation import validate_file_size, validate_file_type
+from app.core.file_validation import sanitize_filename, validate_file_size, validate_file_type
 from app.core.permissions import enforce_filing_access
 from app.core.security import get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_manager_or_partner, get_current_partner, get_current_user
 from app.database import get_db
@@ -366,6 +366,7 @@ async def get_document_upload_url(
     client_user = client_user_result.scalar_one_or_none()
 
     # Validate file type
+    body.filename = sanitize_filename(body.filename)
     validate_file_type(body.filename, body.content_type)
 
     object_key = generate_object_key(
@@ -398,6 +399,8 @@ async def confirm_document_upload(
     db: AsyncSession = Depends(get_db),
 ):
     """Confirm a document upload after the client uploads to MinIO."""
+    filename = sanitize_filename(filename)
+
     # Validate file type and size
     validate_file_type(filename, content_type)
     validate_file_size(file_size)

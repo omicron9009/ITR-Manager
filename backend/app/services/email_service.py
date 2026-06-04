@@ -1,5 +1,6 @@
 """Service — Email delivery via SMTP (credentials from DB)."""
 
+import html
 import logging
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -124,24 +125,28 @@ def _build_professional_email(
 ) -> str:
     """Build a professional HTML email with firm branding and context."""
     frontend_url = settings.FRONTEND_URL.rstrip("/")
-    firm_name = settings.FIRM_NAME
+    firm_name = html.escape(settings.FIRM_NAME)
     firm_website = settings.FIRM_WEBSITE
     firm_phone = settings.FIRM_PHONE
+
+    # HTML-escape user-provided values to prevent XSS
+    title = html.escape(title)
+    message = html.escape(message)
 
     # Build details rows
     details_html = ""
     detail_rows = []
     if client_name:
-        detail_rows.append(("Client", client_name))
+        detail_rows.append(("Client", html.escape(client_name)))
     if financial_year:
-        detail_rows.append(("Financial Year", financial_year))
+        detail_rows.append(("Financial Year", html.escape(financial_year)))
     if filing_status:
-        detail_rows.append(("Filing Status", filing_status))
+        detail_rows.append(("Filing Status", html.escape(filing_status)))
     if action_by:
-        detail_rows.append(("Action By", action_by))
+        detail_rows.append(("Action By", html.escape(action_by)))
     if extra_details:
         for key, value in extra_details.items():
-            detail_rows.append((key, str(value)))
+            detail_rows.append((html.escape(key), html.escape(str(value))))
 
     if detail_rows:
         rows_html = "".join(
@@ -158,12 +163,13 @@ def _build_professional_email(
     # CTA button
     cta_html = ""
     if action_url_path and cta_label:
-        full_url = f"{frontend_url}{action_url_path}"
+        safe_path = html.escape(action_url_path)
+        full_url = f"{frontend_url}{safe_path}"
         cta_html = f"""
         <div style="text-align:center;margin:24px 0;">
             <a href="{full_url}" style="display:inline-block;background:#1a56db;color:#ffffff;
                padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">
-                {cta_label} &rarr;
+                {html.escape(cta_label)} &rarr;
             </a>
         </div>
         """

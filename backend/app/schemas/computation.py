@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.enums import ComputationStatus
 
@@ -61,7 +61,7 @@ class ComputationApproveRequest(BaseModel):
 
 class ComputationRejectRequest(BaseModel):
     computation_id: UUID
-    reason: str
+    reason: str = Field(..., min_length=1, max_length=1000)
 
 
 class ComputationManagerApproveRequest(BaseModel):
@@ -70,7 +70,7 @@ class ComputationManagerApproveRequest(BaseModel):
 
 class ComputationManagerRejectRequest(BaseModel):
     computation_id: UUID
-    reason: str
+    reason: str = Field(..., min_length=1, max_length=1000)
 
 
 class ComputationPartnerApproveRequest(BaseModel):
@@ -79,4 +79,4 @@ class ComputationPartnerApproveRequest(BaseModel):
 
 class ComputationPartnerRejectRequest(BaseModel):
     computation_id: UUID
-    reason: str
+    reason: str = Field(..., min_length=1, max_length=1000)

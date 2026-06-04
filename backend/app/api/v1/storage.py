@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.file_validation import validate_file_size, validate_file_type
+from app.core.file_validation import sanitize_filename, validate_file_size, validate_file_type
 from app.core.permissions import enforce_client_access
 from app.core.security import get_current_active_client, get_current_manager_or_partner, get_current_user
 from app.database import get_db
@@ -36,6 +36,8 @@ async def get_onboarding_upload_url(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a pre-signed URL for uploading a file attached to an onboarding form field."""
+    filename = sanitize_filename(filename)
+
     # Validate that the field_key exists and is a FILE type
     field_result = await db.execute(
         select(OnboardingFormField).where(
@@ -83,6 +85,8 @@ async def confirm_onboarding_upload(
     db: AsyncSession = Depends(get_db),
 ):
     """Confirm an onboarding file upload and return a stored_file ID to use in form_data."""
+    filename = sanitize_filename(filename)
+
     # Validate file type and size
     validate_file_type(filename, content_type)
     validate_file_size(file_size)
@@ -200,6 +204,8 @@ async def get_completed_doc_upload_url(
     db: AsyncSession = Depends(get_db),
 ):
     """Get upload URL for ITR Acknowledgement or Invoice (Manager/Executive/Partner)."""
+    filename = sanitize_filename(filename)
+
     if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
@@ -251,6 +257,7 @@ async def confirm_completed_doc_upload(
     """Confirm upload of ITR Acknowledgement or Invoice."""
     import logging
     logger = logging.getLogger("app")
+    filename = sanitize_filename(filename)
 
     if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
@@ -711,7 +718,7 @@ async def partner_approve_completed_doc(
 @router.post("/completed-doc/manager-reject", response_model=dict)
 async def manager_reject_completed_doc(
     doc_id: UUID = Query(...),
-    reason: str = Query(..., min_length=1),
+    reason: str = Query(..., min_length=1, max_length=1000),
     current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
@@ -844,6 +851,8 @@ async def get_other_doc_upload_url(
     db: AsyncSession = Depends(get_db),
 ):
     """Get upload URL for an 'other' document (Manager/Executive/Partner)."""
+    filename = sanitize_filename(filename)
+
     if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
@@ -897,6 +906,8 @@ async def confirm_other_doc_upload(
     db: AsyncSession = Depends(get_db),
 ):
     """Confirm upload of an 'other' document. Multiple docs allowed per filing."""
+    filename = sanitize_filename(filename)
+
     if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
