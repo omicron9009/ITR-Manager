@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.permissions import enforce_client_access
 from app.core.security import get_current_active_client, get_current_manager_executive_or_partner, get_current_executive_or_partner, get_current_partner, get_current_user
 from app.database import get_db
-from app.enums import AccountStatus, CompletedDocType, ComputationStatus, DocumentStatus, FilingStatus, UserRole
+from app.enums import AccountStatus, CompletedDocStatus, CompletedDocType, ComputationStatus, DocumentStatus, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
 from app.models.executive_assignment import ExecutiveClientAssignment
 from app.models.filing import ITRFiling
@@ -38,6 +38,7 @@ from app.schemas.dashboard import (
     ExecutiveWorkloadItem,
     ExecutiveWorkloadResponse,
     FilingDirectoryResponse,
+    FilingDocSubStateCounter,
     FilingDrillDownItem,
     FilingDrillDownResponse,
     FilingStatusBreakdown,
@@ -214,9 +215,60 @@ async def get_dashboard_summary(
         for comp_st, cnt in sub_state_counts.items()
     ]
 
+    # ── Filing (completed docs) sub-state counters ──
+    # Get all filings in FILING state (scoped by role)
+    filing_phase_result = await db.execute(
+        select(ITRFiling.id).where(ITRFiling.status == FilingStatus.FILING, *base_filter)
+    )
+    filing_phase_ids = [row[0] for row in filing_phase_result.all()]
+
+    filing_doc_sub_counts: Counter = Counter()
+    required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
+
+    if filing_phase_ids:
+        for fid in filing_phase_ids:
+            # Get all completed docs for this filing
+            docs_result = await db.execute(
+                select(FilingCompletedDoc).where(FilingCompletedDoc.filing_id == fid)
+            )
+            docs = docs_result.scalars().all()
+            existing_types = {d.doc_type for d in docs}
+
+            if not required_doc_types.issubset(existing_types):
+                filing_doc_sub_counts["PENDING_UPLOAD"] += 1
+            else:
+                # All uploaded — determine lowest approval state
+                statuses = [d.status for d in docs if d.doc_type in required_doc_types]
+                if any(s == CompletedDocStatus.MANAGER_REJECTED for s in statuses):
+                    filing_doc_sub_counts["MANAGER_REJECTED"] += 1
+                elif all(s == CompletedDocStatus.PARTNER_APPROVED for s in statuses):
+                    filing_doc_sub_counts["ALL_PARTNER_APPROVED"] += 1
+                elif any(s == CompletedDocStatus.MANAGER_APPROVED for s in statuses) or all(s in (CompletedDocStatus.MANAGER_APPROVED, CompletedDocStatus.PARTNER_APPROVED) for s in statuses):
+                    filing_doc_sub_counts["AWAITING_PARTNER_APPROVAL"] += 1
+                else:
+                    filing_doc_sub_counts["AWAITING_MANAGER_APPROVAL"] += 1
+
+    _FILING_DOC_LABELS = {
+        "PENDING_UPLOAD": "Pending Upload by Executive",
+        "AWAITING_MANAGER_APPROVAL": "Awaiting Manager Approval",
+        "AWAITING_PARTNER_APPROVAL": "Awaiting Partner Approval",
+        "ALL_PARTNER_APPROVED": "Approved — Ready for Payment",
+        "MANAGER_REJECTED": "Rejected — Re-upload Required",
+    }
+
+    filing_doc_sub_counters = [
+        FilingDocSubStateCounter(
+            sub_status=_FILING_DOC_LABELS.get(st, st),
+            raw_status=st,
+            count=cnt,
+        )
+        for st, cnt in filing_doc_sub_counts.items()
+    ]
+
     return DashboardSummaryResponse(
         counters=counters,
         computation_sub_counters=computation_sub_counters,
+        filing_doc_sub_counters=filing_doc_sub_counters,
         total_clients=total_clients,
         pending_verification_count=pending_count,
         total_active_filings=total_active,
@@ -502,14 +554,15 @@ async def get_filing_directory(
         ))
 
     # Completed Docs visibility rules:
-    # - Client: only visible after COMPLETED, and only Ack + Invoice (not ITR JSON)
-    # - Partner/Executive: always visible
+    # - Client: only visible after COMPLETED, and only PARTNER_APPROVED docs
+    # - Partner/Executive/Manager: always visible (all statuses)
     completed_items = []
     if current_user.role == UserRole.CLIENT:
         if filing.status == FilingStatus.COMPLETED:
             completed_result = await db.execute(
                 select(FilingCompletedDoc).where(
                     FilingCompletedDoc.filing_id == filing_id,
+                    FilingCompletedDoc.status == CompletedDocStatus.PARTNER_APPROVED,
                     FilingCompletedDoc.doc_type.in_([
                         CompletedDocType.ITR_ACKNOWLEDGEMENT,
                         CompletedDocType.INVOICE,
@@ -522,7 +575,7 @@ async def get_filing_directory(
             completed_docs = completed_result.scalars().all()
         else:
             completed_docs = []
-    elif current_user.role in (UserRole.PARTNER, UserRole.EXECUTIVE):
+    elif current_user.role in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         completed_result = await db.execute(
             select(FilingCompletedDoc).where(FilingCompletedDoc.filing_id == filing_id)
         )
@@ -537,6 +590,7 @@ async def get_filing_directory(
             completed_items.append(DirectoryCompletedDocItem(
                 id=cd.id,
                 doc_type=cd.doc_type.value,
+                status=cd.status.value if cd.status else "UPLOADED",
                 original_filename=stored.original_filename if stored else None,
                 uploaded_at=cd.uploaded_at,
             ))

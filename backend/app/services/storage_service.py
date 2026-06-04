@@ -160,6 +160,20 @@ def generate_declaration_object_key(client_id: str, client_name: str) -> str:
     return f"clients/{client_dir}/declaration/declaration_{client_id}.pdf"
 
 
+def generate_internal_working_key(client_name: str, financial_year: str, filename: str) -> str:
+    """
+    Generate object key for an internal working document.
+    Pattern: Internal-workings/{client-name}-{fy}-internal-working-{uuid}.{ext}
+    Stored in a top-level directory, NOT under clients/.
+    """
+    sanitized_name = _sanitize_name_for_path(client_name).lower().replace("_", "-")
+    unique_id = str(uuid.uuid4())[:8]
+    ext = ""
+    if "." in filename:
+        ext = "." + filename.rsplit(".", 1)[1]
+    return f"Internal-workings/{sanitized_name}-{financial_year}-internal-working-{unique_id}{ext}"
+
+
 def upload_declaration_pdf(client_id: str, client_name: str, pdf_bytes: bytes) -> str:
     """
     Upload the declaration PDF to MinIO.

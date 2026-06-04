@@ -65,6 +65,7 @@ class ITRFiling(Base):
     computations = relationship("FilingComputation", back_populates="filing", cascade="all, delete-orphan")
     completed_docs = relationship("FilingCompletedDoc", back_populates="filing", cascade="all, delete-orphan")
     other_docs = relationship("FilingOtherDoc", back_populates="filing", cascade="all, delete-orphan")
+    internal_working_docs = relationship("InternalWorkingDoc", back_populates="filing", cascade="all, delete-orphan")
     state_history = relationship("FilingStateHistory", back_populates="filing", cascade="all, delete-orphan")
 
     __table_args__ = (

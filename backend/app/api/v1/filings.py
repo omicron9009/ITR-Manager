@@ -572,6 +572,13 @@ async def get_filing(
         if exec_user:
             exec_name = exec_user.full_name
 
+    # Check if internal working docs exist for this filing
+    from app.models.internal_working_doc import InternalWorkingDoc
+    iw_count = await db.scalar(
+        select(func.count()).select_from(InternalWorkingDoc)
+        .where(InternalWorkingDoc.filing_id == filing.id)
+    )
+
     return FilingResponse(
         id=filing.id,
         client_id=filing.client_id,
@@ -593,6 +600,7 @@ async def get_filing(
         completed_at=filing.completed_at,
         halted_at=filing.halted_at,
         halt_reason=filing.halt_reason,
+        has_internal_workings=bool(iw_count and iw_count > 0),
         created_at=filing.created_at,
         updated_at=filing.updated_at,
     )

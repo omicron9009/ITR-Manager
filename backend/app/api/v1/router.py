@@ -13,6 +13,7 @@ from app.api.v1 import (
     executives,
     feedback,
     filings,
+    internal_workings,
     managers,
     notifications,
     onboarding,
@@ -41,3 +42,4 @@ api_router.include_router(tags.router, prefix="/tags", tags=["Tags"])
 api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
 api_router.include_router(action_items.router, prefix="/action-items", tags=["Action Items"])
 api_router.include_router(feedback.router, prefix="/feedback", tags=["Feedback"])
+api_router.include_router(internal_workings.router, prefix="/internal-workings", tags=["Internal Workings"])

@@ -51,6 +51,7 @@ class ComputationResponse(BaseModel):
 class ComputationListResponse(BaseModel):
     items: list[ComputationResponse]
     current_version: Optional[ComputationResponse] = None
+    has_internal_workings: bool = False
 
 
 class ComputationApproveRequest(BaseModel):

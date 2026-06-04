@@ -167,7 +167,7 @@ async def _sync_pg_enums():
 
     from app.enums import (
         AccountStatus, FilingStatus, DocumentStatus, ComputationStatus,
-        CompletedDocType, FormFieldType, AuditEventType, NotificationChannel, UserRole,
+        CompletedDocType, CompletedDocStatus, FormFieldType, AuditEventType, NotificationChannel, UserRole,
         TagType,
     )
     enum_map = {
@@ -177,6 +177,7 @@ async def _sync_pg_enums():
         "document_status": DocumentStatus,
         "computation_status": ComputationStatus,
         "completed_doc_type": CompletedDocType,
+        "completed_doc_status": CompletedDocStatus,
         "form_field_type": FormFieldType,
         "audit_event_type": AuditEventType,
         "notification_channel": NotificationChannel,
@@ -377,6 +378,71 @@ async def _sync_new_columns():
                     'CREATE INDEX "ix_filing_other_docs_filing_id" ON "filing_other_docs" ("filing_id")'
                 )
                 logger.info("Created table 'filing_other_docs'")
+
+            # Ensure internal_working_docs table exists (for existing deployments)
+            iw_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'internal_working_docs'"
+            )
+            if not iw_table_exists:
+                await conn.execute("""
+                    CREATE TABLE internal_working_docs (
+                        id UUID PRIMARY KEY,
+                        filing_id UUID NOT NULL REFERENCES itr_filings(id) ON DELETE CASCADE,
+                        file_id UUID NOT NULL REFERENCES stored_files(id) ON DELETE RESTRICT,
+                        label VARCHAR(255),
+                        uploaded_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """)
+                await conn.execute(
+                    'CREATE INDEX "ix_internal_working_docs_filing_id" ON "internal_working_docs" ("filing_id")'
+                )
+                logger.info("Created table 'internal_working_docs'")
+
+            # ─── Add completed_doc_status enum and approval columns ──────
+            # Create the enum type if it doesn't exist
+            enum_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_type WHERE typname = 'completed_doc_status'"
+            )
+            if not enum_exists:
+                await conn.execute(
+                    "CREATE TYPE completed_doc_status AS ENUM ('UPLOADED', 'MANAGER_APPROVED', 'PARTNER_APPROVED', 'MANAGER_REJECTED')"
+                )
+                logger.info("Created enum type 'completed_doc_status'")
+
+            # Add status column to filing_completed_docs if missing
+            status_col_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'filing_completed_docs' AND column_name = 'status'"
+            )
+            if not status_col_exists:
+                await conn.execute(
+                    "ALTER TABLE filing_completed_docs ADD COLUMN status completed_doc_status NOT NULL DEFAULT 'UPLOADED'"
+                )
+                logger.info("Added 'status' column to filing_completed_docs")
+
+            # Add approval/rejection columns
+            for col, col_type in [
+                ("manager_approved_by", "UUID REFERENCES users(id) ON DELETE SET NULL"),
+                ("manager_approved_at", "TIMESTAMPTZ"),
+                ("manager_rejected_by", "UUID REFERENCES users(id) ON DELETE SET NULL"),
+                ("manager_rejected_at", "TIMESTAMPTZ"),
+                ("rejection_reason", "TEXT"),
+                ("partner_approved_by", "UUID REFERENCES users(id) ON DELETE SET NULL"),
+                ("partner_approved_at", "TIMESTAMPTZ"),
+            ]:
+                col_exists = await conn.fetchval(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'filing_completed_docs' AND column_name = $1",
+                    col,
+                )
+                if not col_exists:
+                    await conn.execute(
+                        f"ALTER TABLE filing_completed_docs ADD COLUMN {col} {col_type}"
+                    )
+                    logger.info(f"Added '{col}' column to filing_completed_docs")
 
             # ─── Migrate email_config from OAuth to SMTP ─────────────────
             email_table_exists = await conn.fetchval(
