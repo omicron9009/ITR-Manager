@@ -23,3 +23,4 @@ from app.models.client_income_heads import ClientIncomeHeads  # noqa: F401
 from app.models.filing_feedback import FilingFeedback  # noqa: F401
 from app.models.filing_other_doc import FilingOtherDoc  # noqa: F401
 from app.models.internal_working_doc import InternalWorkingDoc  # noqa: F401
+from app.models.viewer_completed_queue import ViewerCompletedQueue  # noqa: F401

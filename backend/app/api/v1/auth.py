@@ -20,6 +20,7 @@ from app.schemas.user import (
     LoginRequest,
     PasswordChangeRequest,
     PasswordResetRequest,
+    ProfileUpdateRequest,
     RecoveryCodesResponse,
     TokenResponse,
     UserResponse,
@@ -203,6 +204,19 @@ async def get_current_user_info(
     current_user: User = Depends(get_current_user),
 ):
     """Get the current authenticated user's information."""
+    return current_user
+
+
+@router.patch("/me/profile", response_model=UserResponse)
+async def update_my_profile(
+    body: ProfileUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the current user's profile (name). Available to all roles."""
+    current_user.full_name = body.full_name
+    await db.commit()
+    await db.refresh(current_user)
     return current_user
 
 

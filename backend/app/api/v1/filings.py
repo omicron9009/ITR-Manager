@@ -979,6 +979,30 @@ async def mark_payment_received(
         cta_label="View Filing & Download Documents",
     )
 
+    # Queue for dashboard viewers
+    from app.models.viewer_completed_queue import ViewerCompletedQueue
+
+    viewer_result = await db.execute(
+        select(User).where(User.role == UserRole.DASHBOARD_USER, User.is_active == True)
+    )
+    viewers = viewer_result.scalars().all()
+
+    # Get client name
+    client_result = await db.execute(select(User.full_name).where(User.id == filing.client_id))
+    client_name = client_result.scalar_one_or_none() or "Client"
+
+    for viewer in viewers:
+        db.add(ViewerCompletedQueue(
+            viewer_id=viewer.id,
+            filing_id=filing.id,
+            client_name=client_name,
+            financial_year=filing.financial_year,
+            completed_at=filing.completed_at,
+            completed_by=current_user.id,
+        ))
+
+    await db.commit()
+
     return {"message": "Payment received. Filing marked as completed.", "status": filing.status.value}
 
 
