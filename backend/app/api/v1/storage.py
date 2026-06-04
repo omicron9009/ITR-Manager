@@ -199,8 +199,8 @@ async def get_completed_doc_upload_url(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get upload URL for ITR Acknowledgement or Invoice (Executive/Partner)."""
-    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE):
+    """Get upload URL for ITR Acknowledgement or Invoice (Manager/Executive/Partner)."""
+    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     # Validate file type (skip for ITR_JSON which has its own validation)
@@ -252,7 +252,7 @@ async def confirm_completed_doc_upload(
     import logging
     logger = logging.getLogger("app")
 
-    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE):
+    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     # Validate file type and size (skip for ITR_JSON which has its own validation)
@@ -507,6 +507,7 @@ async def get_completed_docs(
                         CompletedDocType.INVOICE,
                         CompletedDocType.ITR_FORM,
                         CompletedDocType.FINANCIAL_STATEMENT,
+                        CompletedDocType.TAX_PAID_COMPUTATION,
                     ]),
                 )
             )
@@ -578,6 +579,17 @@ async def get_file_download_url(
             file_result = await db.execute(select(StoredFile).where(StoredFile.id == computation.file_id))
             stored_file = file_result.scalar_one_or_none()
 
+    # If still not found, try resolving through FilingOtherDoc
+    if not stored_file:
+        from app.models.filing_other_doc import FilingOtherDoc
+        other_result = await db.execute(
+            select(FilingOtherDoc).where(FilingOtherDoc.id == file_id)
+        )
+        other_doc = other_result.scalar_one_or_none()
+        if other_doc:
+            file_result = await db.execute(select(StoredFile).where(StoredFile.id == other_doc.file_id))
+            stored_file = file_result.scalar_one_or_none()
+
     if not stored_file:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
@@ -589,3 +601,245 @@ async def get_file_download_url(
         "content_type": stored_file.content_type,
         "file_size": stored_file.file_size_bytes,
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# OTHER DOCUMENTS (multiple misc docs per filing)
+# ═══════════════════════════════════════════════════════════════
+
+
+# ─── POST /storage/other-doc/upload-url ──────────────────────
+@router.post("/other-doc/upload-url", response_model=dict)
+async def get_other_doc_upload_url(
+    filing_id: UUID = Query(...),
+    filename: str = Query(...),
+    content_type: str = Query(...),
+    label: str = Query(None, max_length=255, description="Optional label for the document"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get upload URL for an 'other' document (Manager/Executive/Partner)."""
+    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+    validate_file_type(filename, content_type)
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_client_access(db, current_user, filing.client_id)
+
+    # Other docs can be uploaded in FILING, PAYMENT, or COMPLETED states
+    if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot upload other documents in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
+        )
+
+    # Fetch client name for readable MinIO path
+    client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_user_result.scalar_one_or_none()
+
+    from app.services.storage_service import generate_object_key
+    object_key = generate_object_key(
+        client_id=str(filing.client_id),
+        financial_year=filing.financial_year,
+        folder="other_documents",
+        filename=filename,
+        client_name=client_user.full_name if client_user else "",
+    )
+
+    upload_url = get_presigned_upload_url(object_key, content_type)
+
+    return {
+        "upload_url": upload_url,
+        "object_key": object_key,
+    }
+
+
+# ─── POST /storage/other-doc/confirm ────────────────────────
+@router.post("/other-doc/confirm", response_model=dict)
+async def confirm_other_doc_upload(
+    filing_id: UUID = Query(...),
+    object_key: str = Query(...),
+    filename: str = Query(...),
+    content_type: str = Query(...),
+    file_size: int = Query(..., gt=0),
+    label: str = Query(None, max_length=255, description="Optional label for the document"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm upload of an 'other' document. Multiple docs allowed per filing."""
+    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+    validate_file_type(filename, content_type)
+    validate_file_size(file_size)
+
+    from app.config import settings
+    from app.models.filing_other_doc import FilingOtherDoc
+    from app.services.audit_service import record_audit_event
+    from app.enums import AuditEventType
+    from datetime import datetime
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_client_access(db, current_user, filing.client_id)
+
+    if filing.status not in (FilingStatus.FILING, FilingStatus.PAYMENT, FilingStatus.COMPLETED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot upload other documents in {filing.status.value} state. Filing must be in FILING, PAYMENT, or COMPLETED.",
+        )
+
+    # Validate object_key belongs to this client's other_documents folder
+    client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_user_result.scalar_one_or_none()
+    try:
+        validate_object_key_prefix(
+            object_key, str(filing.client_id),
+            client_user.full_name if client_user else "",
+            f"ITR-{filing.financial_year}/other_documents",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    # Create StoredFile record
+    existing_file_result = await db.execute(
+        select(StoredFile).where(
+            StoredFile.bucket == settings.MINIO_BUCKET_NAME,
+            StoredFile.object_key == object_key,
+        )
+    )
+    stored_file = existing_file_result.scalar_one_or_none()
+
+    if stored_file:
+        stored_file.original_filename = filename
+        stored_file.content_type = content_type
+        stored_file.file_size_bytes = file_size
+        stored_file.uploaded_by = current_user.id
+        stored_file.uploaded_at = datetime.utcnow()
+    else:
+        stored_file = StoredFile(
+            bucket=settings.MINIO_BUCKET_NAME,
+            object_key=object_key,
+            original_filename=filename,
+            content_type=content_type,
+            file_size_bytes=file_size,
+            uploaded_by=current_user.id,
+        )
+        db.add(stored_file)
+        await db.flush()
+
+    # Create FilingOtherDoc record (always new — multiple allowed)
+    other_doc = FilingOtherDoc(
+        filing_id=filing_id,
+        file_id=stored_file.id,
+        label=label,
+        uploaded_by=current_user.id,
+    )
+    db.add(other_doc)
+    await db.flush()
+
+    # Audit
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.DOCUMENT_UPLOADED,
+        actor_id=current_user.id,
+        client_id=filing.client_id,
+        filing_id=filing_id,
+        details={"doc_type": "OTHER", "filename": filename, "label": label},
+    )
+
+    await db.commit()
+
+    return {
+        "message": "Other document uploaded successfully",
+        "id": str(other_doc.id),
+        "file_id": str(stored_file.id),
+    }
+
+
+# ─── GET /storage/other-docs/{filing_id} ────────────────────
+@router.get("/other-docs/{filing_id}", response_model=list[dict])
+async def get_other_docs(
+    filing_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get other docs for a filing.
+    Clients can only see these once filing is COMPLETED.
+    """
+    from app.models.filing_other_doc import FilingOtherDoc
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_client_access(db, current_user, filing.client_id)
+
+    # Clients can only view other documents after COMPLETED state
+    if current_user.role == UserRole.CLIENT:
+        if filing.status != FilingStatus.COMPLETED:
+            return []
+
+    result = await db.execute(
+        select(FilingOtherDoc).where(FilingOtherDoc.filing_id == filing_id)
+        .order_by(FilingOtherDoc.uploaded_at.desc())
+    )
+    docs = result.scalars().all()
+
+    items = []
+    for doc in docs:
+        file_result = await db.execute(select(StoredFile).where(StoredFile.id == doc.file_id))
+        stored = file_result.scalar_one_or_none()
+        items.append({
+            "id": str(doc.id),
+            "file_id": str(doc.file_id),
+            "label": doc.label,
+            "filename": stored.original_filename if stored else None,
+            "content_type": stored.content_type if stored else None,
+            "file_size": stored.file_size_bytes if stored else None,
+            "uploaded_by": str(doc.uploaded_by),
+            "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+        })
+
+    return items
+
+
+# ─── DELETE /storage/other-doc/{doc_id} ──────────────────────
+@router.delete("/other-doc/{doc_id}", response_model=dict)
+async def delete_other_doc(
+    doc_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an 'other' document (Manager/Executive/Partner)."""
+    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+    from app.models.filing_other_doc import FilingOtherDoc
+
+    result = await db.execute(select(FilingOtherDoc).where(FilingOtherDoc.id == doc_id))
+    other_doc = result.scalar_one_or_none()
+    if not other_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Verify access to the filing's client
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == other_doc.filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_client_access(db, current_user, filing.client_id)
+
+    await db.delete(other_doc)
+    await db.commit()
+
+    return {"message": "Document deleted successfully"}

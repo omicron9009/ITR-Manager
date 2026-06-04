@@ -232,7 +232,8 @@ docker run -it `
   -e MINIO_SECRET_KEY="minioadmin" `
   -e MINIO_BUCKET_NAME="itr-documents" `
   -e MINIO_USE_SSL="false" `
-  -e MINIO_PUBLIC_ENDPOINT="192.168.1.107:9000" `
+  -e MINIO_PUBLIC_USE_SSL="false" `
+  -e MINIO_PUBLIC_ENDPOINT="192.168.1.115:9000" `
   -e MINIO_KMS_SECRET_KEY="itr-enc-key:TO5VFgmMWEBSNONMHR+g9hBTs7yp/bOU6MJB0bSthGQ=" `
   -e JWT_SECRET_KEY="dev-secret-key-change-in-production" `
   -e JWT_ALGORITHM="HS256" `

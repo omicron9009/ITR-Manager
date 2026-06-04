@@ -21,3 +21,4 @@ from app.models.manager_tag import ManagerTag  # noqa: F401
 from app.models.recovery_code import RecoveryCode  # noqa: F401
 from app.models.client_income_heads import ClientIncomeHeads  # noqa: F401
 from app.models.filing_feedback import FilingFeedback  # noqa: F401
+from app.models.filing_other_doc import FilingOtherDoc  # noqa: F401

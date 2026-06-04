@@ -190,7 +190,10 @@ async def _get_executive_items(
     if not client_ids and not filing_id_filter:
         return []
 
-    return await _get_filing_items_for_staff(db, filing_id_filter, scoped_client_ids=client_ids)
+    items = await _get_filing_items_for_staff(db, filing_id_filter, scoped_client_ids=client_ids)
+    # Executives cannot mark payment received — filter out that action item
+    items = [i for i in items if i.type != ActionItemType.MARK_PAYMENT_RECEIVED]
+    return items
 
 
 # ---------------------------------------------------------------------------

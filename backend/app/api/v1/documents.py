@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.file_validation import validate_file_size, validate_file_type
 from app.core.permissions import enforce_filing_access
-from app.core.security import get_current_executive_or_partner, get_current_manager_or_partner, get_current_partner, get_current_user
+from app.core.security import get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_manager_or_partner, get_current_partner, get_current_user
 from app.database import get_db
 from app.enums import AuditEventType, DocumentStatus, FilingStatus, UserRole
 from app.models.filing import ITRFiling
@@ -136,10 +136,10 @@ async def update_document_type(
 async def assign_documents_to_filing(
     filing_id: UUID,
     body: DocumentPlaceholderAssignRequest,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign document placeholders to a filing (Executive/Partner).
+    """Assign document placeholders to a filing (Manager/Executive/Partner).
 
     Idempotent: can be called multiple times to update the checklist.
     Works in INITIATED or DOCUMENT_UPLOAD state.
@@ -583,10 +583,10 @@ async def delete_document(
 @router.post("/approve", response_model=dict)
 async def approve_filing_documents(
     body: DocumentApproveRequest,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Approve one or more documents (Executive/Partner)."""
+    """Approve one or more documents (Manager/Executive/Partner)."""
     approved = await approve_documents(db, body.document_ids, current_user.id)
     if not approved:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No documents found to approve")
@@ -616,10 +616,10 @@ async def approve_filing_documents(
 @router.post("/reject", response_model=dict)
 async def reject_filing_documents(
     body: DocumentRejectRequest,
-    current_user: User = Depends(get_current_executive_or_partner),
+    current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Reject one or more documents with reasons (Executive/Partner)."""
+    """Reject one or more documents with reasons (Manager/Executive/Partner)."""
     if not body.rejections:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No rejections provided")
 
