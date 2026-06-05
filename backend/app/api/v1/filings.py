@@ -32,7 +32,7 @@ from app.services.filing_service import (
     check_duplicate_filing,
     transition_filing_status,
 )
-from app.services.notification_service import create_notification
+from app.services.notification_service import create_notification, notify_partner_and_manager
 
 router = APIRouter()
 
@@ -121,26 +121,20 @@ async def initiate_filing(
         ip_address=request.client.host if request.client else None,
     )
 
-    # Notify Partner
-    from app.models.user import User as UserModel
-    partner_result = await db.execute(
-        select(UserModel).where(UserModel.role == UserRole.PARTNER, UserModel.is_active == True)
+    # Notify Partner + Manager
+    await notify_partner_and_manager(
+        db=db,
+        client_id=current_user.id,
+        title="New ITR Filing Initiated",
+        message=f"A new ITR Filing has been initiated by {current_user.full_name} for FY {body.financial_year}.",
+        related_filing_id=filing.id,
+        related_client_id=current_user.id,
+        client_name=current_user.full_name,
+        financial_year=body.financial_year,
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}",
+        cta_label="View Filing",
     )
-    partner = partner_result.scalar_one_or_none()
-    if partner:
-        await create_notification(
-            db=db,
-            user_id=partner.id,
-            title="New ITR Filing Initiated",
-            message=f"A new ITR Filing has been initiated by {current_user.full_name} for FY {body.financial_year}.",
-            related_filing_id=filing.id,
-            related_client_id=current_user.id,
-            client_name=current_user.full_name,
-            financial_year=body.financial_year,
-            action_by=current_user.full_name,
-            action_url_path=f"/filings/{filing.id}",
-            cta_label="View Filing",
-        )
 
     # Notify assigned Executive if any
     from app.models.executive_assignment import ExecutiveClientAssignment
@@ -371,27 +365,21 @@ async def approve_fee_change(
     )
     filing.engagement_letter_key = engagement_key
 
-    # Notify Partner
-    from app.models.user import User as UserModel
-    partner_result = await db.execute(
-        select(UserModel).where(UserModel.role == UserRole.PARTNER, UserModel.is_active == True)
+    # Notify Partner + Manager
+    await notify_partner_and_manager(
+        db=db,
+        client_id=current_user.id,
+        title="Fee Change Approved",
+        message=f"{current_user.full_name} has approved the revised professional fee for FY {filing.financial_year}.",
+        related_filing_id=filing.id,
+        related_client_id=current_user.id,
+        client_name=current_user.full_name,
+        financial_year=filing.financial_year,
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}",
+        cta_label="View Filing",
+        extra_details={"Approved Fee": f"Rs. {filing.professional_fee:.2f}"},
     )
-    partner = partner_result.scalar_one_or_none()
-    if partner:
-        await create_notification(
-            db=db,
-            user_id=partner.id,
-            title="Fee Change Approved",
-            message=f"{current_user.full_name} has approved the revised professional fee for FY {filing.financial_year}.",
-            related_filing_id=filing.id,
-            related_client_id=current_user.id,
-            client_name=current_user.full_name,
-            financial_year=filing.financial_year,
-            action_by=current_user.full_name,
-            action_url_path=f"/filings/{filing.id}",
-            cta_label="View Filing",
-            extra_details={"Approved Fee": f"Rs. {filing.professional_fee:.2f}"},
-        )
 
     # Email updated engagement letter to client (background)
     background_tasks.add_task(
@@ -436,27 +424,21 @@ async def reject_fee_change(
     filing.fee_proposed_at = None
     filing.fee_proposed_by = None
 
-    # Notify Partner about rejection
-    from app.models.user import User as UserModel
-    partner_result = await db.execute(
-        select(UserModel).where(UserModel.role == UserRole.PARTNER, UserModel.is_active == True)
+    # Notify Partner + Manager about rejection
+    await notify_partner_and_manager(
+        db=db,
+        client_id=current_user.id,
+        title="Fee Change Rejected",
+        message=f"{current_user.full_name} has rejected the proposed fee change for FY {filing.financial_year}. The current fee remains unchanged.",
+        related_filing_id=filing.id,
+        related_client_id=current_user.id,
+        client_name=current_user.full_name,
+        financial_year=filing.financial_year,
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}",
+        cta_label="View Filing",
+        extra_details={"Rejected Fee": f"Rs. {rejected_fee:.2f}", "Current Fee": f"Rs. {filing.professional_fee:.2f}" if filing.professional_fee else "Not set"},
     )
-    partner = partner_result.scalar_one_or_none()
-    if partner:
-        await create_notification(
-            db=db,
-            user_id=partner.id,
-            title="Fee Change Rejected",
-            message=f"{current_user.full_name} has rejected the proposed fee change for FY {filing.financial_year}. The current fee remains unchanged.",
-            related_filing_id=filing.id,
-            related_client_id=current_user.id,
-            client_name=current_user.full_name,
-            financial_year=filing.financial_year,
-            action_by=current_user.full_name,
-            action_url_path=f"/filings/{filing.id}",
-            cta_label="View Filing",
-            extra_details={"Rejected Fee": f"Rs. {rejected_fee:.2f}", "Current Fee": f"Rs. {filing.professional_fee:.2f}" if filing.professional_fee else "Not set"},
-        )
 
     await db.flush()
     await db.commit()
@@ -877,25 +859,20 @@ async def submit_documents(
     # Filing stays in DOCUMENT_UPLOAD — it only moves to PROCESSING once
     # the Executive/Partner has approved ALL documents.
 
-    # Notify partner + executive on every submission (initial or re-submission after rejection)
-    partner_result = await db.execute(
-        select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+    # Notify partner + manager + executive on every submission
+    await notify_partner_and_manager(
+        db=db,
+        client_id=current_user.id,
+        title="Documents Submitted for Review",
+        message=f"{current_user.full_name} has submitted documents for FY {filing.financial_year}. Please review and approve.",
+        related_filing_id=filing.id,
+        related_client_id=current_user.id,
+        client_name=current_user.full_name,
+        financial_year=filing.financial_year,
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}/documents",
+        cta_label="Review Documents",
     )
-    partner = partner_result.scalar_one_or_none()
-    if partner:
-        await create_notification(
-            db=db,
-            user_id=partner.id,
-            title="Documents Submitted for Review",
-            message=f"{current_user.full_name} has submitted documents for FY {filing.financial_year}. Please review and approve.",
-            related_filing_id=filing.id,
-            related_client_id=current_user.id,
-            client_name=current_user.full_name,
-            financial_year=filing.financial_year,
-            action_by=current_user.full_name,
-            action_url_path=f"/filings/{filing.id}/documents",
-            cta_label="Review Documents",
-        )
 
     if filing.assigned_executive_id:
         await create_notification(

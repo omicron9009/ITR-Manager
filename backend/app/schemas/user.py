@@ -46,6 +46,7 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     recovery_codes: Optional[list[str]] = None
+    email: Optional[str] = None
 
 
 # ─── Password Reset / Change ────────────────────────────────
