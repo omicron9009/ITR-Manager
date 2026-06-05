@@ -134,6 +134,79 @@ async def create_notification(
     return notification
 
 
+async def notify_partner_and_manager(
+    db: AsyncSession,
+    *,
+    client_id: UUID,
+    title: str,
+    message: str,
+    channel: NotificationChannel = NotificationChannel.BOTH,
+    related_filing_id: Optional[UUID] = None,
+    related_client_id: Optional[UUID] = None,
+    client_name: Optional[str] = None,
+    financial_year: Optional[str] = None,
+    filing_status: Optional[str] = None,
+    action_by: Optional[str] = None,
+    action_url_path: Optional[str] = None,
+    cta_label: Optional[str] = None,
+    extra_details: Optional[dict] = None,
+) -> None:
+    """Send a notification to both Partner AND the Manager responsible for the client.
+
+    Manager is resolved via: ExecutiveClientAssignment (client → executive) →
+    ManagerExecutiveAssignment (executive → manager).
+
+    If the client has no manager (executive has no manager assigned), the
+    notification is skipped for the manager role — Partner still receives it.
+    If there is no Partner user, Partner notification is skipped silently.
+    """
+    from app.enums import UserRole
+    from app.models.executive_assignment import ExecutiveClientAssignment
+    from app.models.manager_executive_assignment import ManagerExecutiveAssignment
+
+    common_kwargs = dict(
+        channel=channel,
+        related_filing_id=related_filing_id,
+        related_client_id=related_client_id,
+        client_name=client_name,
+        financial_year=financial_year,
+        filing_status=filing_status,
+        action_by=action_by,
+        action_url_path=action_url_path,
+        cta_label=cta_label,
+        extra_details=extra_details,
+    )
+
+    # ── Partner ──────────────────────────────────────────────
+    partner_result = await db.execute(
+        select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+    )
+    partner = partner_result.scalar_one_or_none()
+    if partner:
+        await create_notification(db=db, user_id=partner.id, title=title, message=message, **common_kwargs)
+
+    # ── Manager (via executive assignment chain) ─────────────
+    exec_assign_result = await db.execute(
+        select(ExecutiveClientAssignment).where(
+            ExecutiveClientAssignment.client_id == client_id,
+            ExecutiveClientAssignment.is_active == True,
+        )
+    )
+    exec_assign = exec_assign_result.scalar_one_or_none()
+    if exec_assign:
+        mgr_assign_result = await db.execute(
+            select(ManagerExecutiveAssignment).where(
+                ManagerExecutiveAssignment.executive_id == exec_assign.executive_id,
+                ManagerExecutiveAssignment.is_active == True,
+            )
+        )
+        mgr_assign = mgr_assign_result.scalar_one_or_none()
+        if mgr_assign:
+            await create_notification(
+                db=db, user_id=mgr_assign.manager_id, title=title, message=message, **common_kwargs
+            )
+
+
 async def get_user_notifications(
     db: AsyncSession,
     user_id: UUID,

@@ -68,6 +68,7 @@ async def login(
     return TokenResponse(
         access_token=token,
         recovery_codes=recovery_codes,
+        email=user.email if recovery_codes else None,
     )
 
 

@@ -34,7 +34,7 @@ from app.schemas.computation import (
     ComputationUploadURLResponse,
 )
 from app.services.audit_service import record_audit_event
-from app.services.notification_service import create_notification
+from app.services.notification_service import create_notification, notify_partner_and_manager
 from app.services.storage_service import generate_object_key, get_presigned_download_url, get_presigned_upload_url, validate_object_key_prefix
 
 router = APIRouter()
@@ -213,26 +213,7 @@ async def confirm_computation_upload(
                 cta_label="Review Computation",
                 extra_details={"Version": version, "Filename": filename},
             )
-        else:
-            # No manager — notify partner directly
-            partner_result = await db.execute(
-                select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
-            )
-            partner = partner_result.scalars().first()
-            if partner:
-                await create_notification(
-                    db=db,
-                    user_id=partner.id,
-                    title="Computation Uploaded — Review Required",
-                    message=f"A computation (v{version}) has been uploaded by {current_user.full_name} for client {client_user.full_name if client_user else 'Unknown'}, FY {filing.financial_year}. Please review and approve.",
-                    related_filing_id=filing_id,
-                    client_name=client_user.full_name if client_user else None,
-                    financial_year=filing.financial_year,
-                    action_by=current_user.full_name,
-                    action_url_path=f"/filings/{filing_id}/computation",
-                    cta_label="Review Computation",
-                    extra_details={"Version": version, "Filename": filename},
-                )
+        # No manager — notification skipped (per platform policy)
     elif current_user.role == UserRole.MANAGER:
         # Manager uploaded — notify partner
         partner_result = await db.execute(
@@ -433,25 +414,21 @@ async def approve_computation(
             )
 
         # Notify Partner + Executive that filing has advanced
-        partner_result = await db.execute(
-            select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+        # Notify Partner + Manager — Scenario B (tax paid on already-approved computation)
+        await notify_partner_and_manager(
+            db=db,
+            client_id=current_user.id,
+            title="Tax Payment Confirmed — Filing Advanced",
+            message=f"Tax payment has been confirmed by {current_user.full_name} for FY {filing.financial_year}. Filing has automatically advanced to FILING state.",
+            related_filing_id=filing.id,
+            related_client_id=current_user.id,
+            client_name=current_user.full_name,
+            financial_year=filing.financial_year,
+            filing_status="FILING",
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}",
+            cta_label="View Filing",
         )
-        partner = partner_result.scalar_one_or_none()
-        if partner:
-            await create_notification(
-                db=db,
-                user_id=partner.id,
-                title="Tax Payment Confirmed — Filing Advanced",
-                message=f"Tax payment has been confirmed by {current_user.full_name} for FY {filing.financial_year}. Filing has automatically advanced to FILING state.",
-                related_filing_id=filing.id,
-                related_client_id=current_user.id,
-                client_name=current_user.full_name,
-                financial_year=filing.financial_year,
-                filing_status="FILING",
-                action_by=current_user.full_name,
-                action_url_path=f"/filings/{filing.id}",
-                cta_label="View Filing",
-            )
 
         if filing.assigned_executive_id:
             await create_notification(
@@ -552,25 +529,21 @@ async def approve_computation(
             f"Awaiting tax payment confirmation from client before filing can advance."
         )
 
-    partner_result = await db.execute(
-        select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+    # Notify Partner + Manager — Scenario A (normal client approval)
+    await notify_partner_and_manager(
+        db=db,
+        client_id=current_user.id,
+        title=notif_title,
+        message=notif_message,
+        related_filing_id=filing.id,
+        related_client_id=current_user.id,
+        client_name=current_user.full_name,
+        financial_year=filing.financial_year,
+        filing_status=filing.status.value,
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}",
+        cta_label="View Filing",
     )
-    partner = partner_result.scalar_one_or_none()
-    if partner:
-        await create_notification(
-            db=db,
-            user_id=partner.id,
-            title=notif_title,
-            message=notif_message,
-            related_filing_id=filing.id,
-            related_client_id=current_user.id,
-            client_name=current_user.full_name,
-            financial_year=filing.financial_year,
-            filing_status=filing.status.value,
-            action_by=current_user.full_name,
-            action_url_path=f"/filings/{filing.id}",
-            cta_label="View Filing",
-        )
 
     if filing.assigned_executive_id:
         await create_notification(
@@ -657,26 +630,21 @@ async def reject_computation(
         details={"version": computation.version, "reason": body.reason},
     )
 
-    # Notify Partner + assigned Executive
-    partner_result = await db.execute(
-        select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+    # Notify Partner + Manager about client rejection
+    await notify_partner_and_manager(
+        db=db,
+        client_id=current_user.id,
+        title="Computation Rejected by Client",
+        message=f"Computation (v{computation.version}) has been rejected by {current_user.full_name} for FY {filing.financial_year}. A revised computation needs to be uploaded.",
+        related_filing_id=filing.id,
+        related_client_id=current_user.id,
+        client_name=current_user.full_name,
+        financial_year=filing.financial_year,
+        action_by=current_user.full_name,
+        action_url_path=f"/filings/{filing.id}/computation/upload",
+        cta_label="Upload Revised Computation",
+        extra_details={"Version Rejected": computation.version, "Reason": body.reason},
     )
-    partner = partner_result.scalar_one_or_none()
-    if partner:
-        await create_notification(
-            db=db,
-            user_id=partner.id,
-            title="Computation Rejected by Client",
-            message=f"Computation (v{computation.version}) has been rejected by {current_user.full_name} for FY {filing.financial_year}. A revised computation needs to be uploaded.",
-            related_filing_id=filing.id,
-            related_client_id=current_user.id,
-            client_name=current_user.full_name,
-            financial_year=filing.financial_year,
-            action_by=current_user.full_name,
-            action_url_path=f"/filings/{filing.id}/computation/upload",
-            cta_label="Upload Revised Computation",
-            extra_details={"Version Rejected": computation.version, "Reason": body.reason},
-        )
 
     if filing.assigned_executive_id:
         await create_notification(
