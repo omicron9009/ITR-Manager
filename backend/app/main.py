@@ -325,6 +325,11 @@ async def _sync_new_columns():
         ("itr_filings", "proposed_fee", "NUMERIC(10,2)", None),
         ("itr_filings", "fee_proposed_at", "TIMESTAMPTZ", None),
         ("itr_filings", "fee_proposed_by", "UUID", None),
+        # Executive + Manager snapshot on viewer_completed_queue
+        ("viewer_completed_queue", "executive_id", "UUID", None),
+        ("viewer_completed_queue", "executive_name", "VARCHAR(255)", None),
+        ("viewer_completed_queue", "manager_id", "UUID", None),
+        ("viewer_completed_queue", "manager_name", "VARCHAR(255)", None),
     ]
 
     try:

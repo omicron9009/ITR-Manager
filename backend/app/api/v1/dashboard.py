@@ -1262,6 +1262,10 @@ async def get_completed_queue(
             financial_year=row.financial_year,
             completed_at=row.completed_at,
             completed_by_name=completed_by_name,
+            executive_id=row.executive_id,
+            executive_name=row.executive_name,
+            manager_id=row.manager_id,
+            manager_name=row.manager_name,
         ))
 
     return CompletedQueueResponse(items=items, count=len(items))
