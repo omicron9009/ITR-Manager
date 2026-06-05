@@ -360,6 +360,7 @@ async def _build_location_distribution(db: AsyncSession, financial_year: Optiona
                 "tag_id": loc_tag.id,
                 "location_name": loc_tag.name,
                 "executive_count": 0,
+                "manager_count": 0,
                 "total_filings": 0,
                 "active_filings": 0,
                 "completed_filings": 0,
@@ -374,6 +375,15 @@ async def _build_location_distribution(db: AsyncSession, financial_year: Optiona
         avg_days = await _avg_completion_days(
             db, [ITRFiling.assigned_executive_id.in_(loc_exec_ids)] + fy_filter
         )
+
+        # Count distinct managers assigned to executives in this location
+        mgr_result = await db.execute(
+            select(ManagerExecutiveAssignment.manager_id).where(
+                ManagerExecutiveAssignment.executive_id.in_(loc_exec_ids),
+                ManagerExecutiveAssignment.is_active == True,
+            ).distinct()
+        )
+        manager_count = len(mgr_result.scalars().all())
 
         # Per-executive breakdown
         executives = []
@@ -400,6 +410,7 @@ async def _build_location_distribution(db: AsyncSession, financial_year: Optiona
             "tag_id": loc_tag.id,
             "location_name": loc_tag.name,
             "executive_count": len(loc_exec_ids),
+            "manager_count": manager_count,
             "total_filings": stats["total"],
             "active_filings": stats["active"],
             "completed_filings": stats["completed"],

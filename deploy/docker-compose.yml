@@ -75,7 +75,34 @@ services:
         limits:
           memory: 2gb
     restart: unless-stopped
-
+  redis:
+    image: redis:7-alpine
+    container_name: itr-redis
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "512mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+    volumes:
+      - F:\PlatformData\redis:/data
+    networks:
+      - internal_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 600mb
+    restart: unless-stopped
   # ═══════════════════════════════════════════════════════════════
   # INGRESS, ROUTING & SSL LAYER
   # ═══════════════════════════════════════════════════════════════
@@ -91,8 +118,8 @@ services:
       - "--metrics.prometheus=true"
       - "--metrics.prometheus.addEntryPointsLabels=true"
     ports:
-      - "80:80"
-      - "8080:8080"
+      - "8080:80"
+      - "8088:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
@@ -136,6 +163,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - ingress_network
       - internal_network
@@ -152,7 +181,7 @@ services:
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`workpartners.co.in`)"
+      - "traefik.http.routers.frontend.rule=Host(`aikar.workpartners.co.in`) || Host(`workpartners.co.in`)"
       - "traefik.http.routers.frontend.entrypoints=web"
       - "traefik.http.routers.frontend.middlewares=frontend-ratelimit@docker"
       - "traefik.http.services.frontend.loadbalancer.server.port=3000"
