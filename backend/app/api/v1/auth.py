@@ -9,6 +9,7 @@ from app.core.security import (
     get_current_partner,
     get_current_user,
     hash_password,
+    invalidate_user_cache,
     verify_password,
 )
 from app.database import get_db
@@ -119,8 +120,13 @@ async def change_password(
             detail="Current password is incorrect",
         )
 
-    current_user.password_hash = hash_password(body.new_password)
+    # Re-fetch from DB to get a session-tracked instance (current_user may be a
+    # transient object reconstructed from cache and not attached to this session).
+    db_result = await db.execute(select(User).where(User.id == current_user.id))
+    db_user = db_result.scalar_one()
+    db_user.password_hash = hash_password(body.new_password)
     await db.commit()
+    await invalidate_user_cache(current_user.id)
 
     return {"message": "Password changed successfully."}
 
@@ -148,8 +154,13 @@ async def change_email(
             detail="Email is already in use by another account",
         )
 
-    current_user.email = body.new_email
+    # Re-fetch from DB to get a session-tracked instance (current_user may be a
+    # transient object reconstructed from cache and not attached to this session).
+    db_result = await db.execute(select(User).where(User.id == current_user.id))
+    db_user = db_result.scalar_one()
+    db_user.email = body.new_email
     await db.commit()
+    await invalidate_user_cache(current_user.id)
 
     return ChangeEmailResponse(
         message="Email updated successfully.",
@@ -214,10 +225,15 @@ async def update_my_profile(
     db: AsyncSession = Depends(get_db),
 ):
     """Update the current user's profile (name). Available to all roles."""
-    current_user.full_name = body.full_name
+    # Re-fetch from DB to get a session-tracked instance (current_user may be a
+    # transient object reconstructed from cache and not attached to this session).
+    db_result = await db.execute(select(User).where(User.id == current_user.id))
+    db_user = db_result.scalar_one()
+    db_user.full_name = body.full_name
     await db.commit()
-    await db.refresh(current_user)
-    return current_user
+    await db.refresh(db_user)
+    await invalidate_user_cache(current_user.id)
+    return db_user
 
 
 @router.get("/health")
