@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.cache import NS, bump_version, cache_get, cache_set, _MISS
 from app.database import get_db
 from app.enums import UserRole
 from app.models.user import User
@@ -70,10 +71,37 @@ async def get_current_user(
             detail="Token missing subject claim",
         )
 
-    result = await db.execute(
-        select(User).where(User.id == UUID(subject_id), User.is_active == True)
-    )
-    user = result.scalar_one_or_none()
+    # ── Cache lookup (5s TTL): avoids hitting Postgres on every authed request.
+    # We cache the scalar row as a dict (NOT the ORM instance) and reconstruct
+    # a transient User. This is safe because downstream code only reads scalar
+    # attributes (id, role, account_status, is_active, email, full_name, ...).
+    user: User | None = None
+    cached = await cache_get(NS.USER_BY_ID, subject_id)
+    if cached is not _MISS and isinstance(cached, dict):
+        try:
+            user = User(**cached)
+        except Exception:
+            user = None  # fall back to DB on any reconstruction issue
+
+    if user is None:
+        result = await db.execute(
+            select(User).where(User.id == UUID(subject_id), User.is_active == True)
+        )
+        user = result.scalar_one_or_none()
+        if user is not None:
+            row_dict = {
+                c.name: getattr(user, c.name)
+                for c in User.__table__.columns
+            }
+            try:
+                await cache_set(
+                    NS.USER_BY_ID,
+                    subject_id,
+                    row_dict,
+                    settings.CACHE_TTL_USER,
+                )
+            except Exception:
+                pass
 
     if not user:
         raise HTTPException(
@@ -84,6 +112,12 @@ async def get_current_user(
     # Store user in request state for downstream use
     request.state.current_user = user
     return user
+
+
+async def invalidate_user_cache(user_id: UUID | str) -> None:
+    """Call this after any mutation that affects auth (deactivate, role change)."""
+    # Bumping the namespace invalidates ALL user entries; cheap and safe.
+    await bump_version(NS.USER_BY_ID)
 
 
 async def get_current_active_client(

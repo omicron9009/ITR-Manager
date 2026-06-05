@@ -40,3 +40,7 @@ fpdf2==2.8.1
 #kuch to
 prometheus-fastapi-instrumentator>=7.0.0
 prometheus-client>=0.20.0
+
+# Cache
+redis[hiredis]>=5.0.4
+cachetools>=5.3.3

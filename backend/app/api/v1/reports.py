@@ -30,8 +30,19 @@ async def get_comprehensive_dashboard(
 
     Optional ?fy=2024-2025 filter narrows filing data to a specific financial year.
     """
-    data = await build_comprehensive_report(db, financial_year=fy)
-    return ComprehensiveReportResponse(**data)
+    from app.config import settings as _settings
+    from app.core.cache import NS, get_or_compute
+
+    async def _build() -> ComprehensiveReportResponse:
+        data = await build_comprehensive_report(db, financial_year=fy)
+        return ComprehensiveReportResponse(**data)
+
+    return await get_or_compute(
+        NS.REPORT,
+        f"dashboard:fy={fy or 'all'}",
+        _settings.CACHE_TTL_REPORT,
+        _build,
+    )
 
 
 @router.get("/download")

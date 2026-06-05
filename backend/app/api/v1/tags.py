@@ -62,6 +62,8 @@ async def create_new_tag(
         created_by=current_user.id,
         description=body.description,
     )
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.TAGS)
     exec_count = await get_tag_executive_count(db, tag.id)
     return TagResponse(
         id=tag.id,
@@ -81,22 +83,33 @@ async def list_all_tags(
     db: AsyncSession = Depends(get_db),
 ):
     """List all tags, optionally filtered by type. Partner only."""
-    tags = await list_tags(db, tag_type=tag_type)
-    items = []
-    for tag in tags:
-        exec_count = await get_tag_executive_count(db, tag.id)
-        items.append(
-            TagResponse(
-                id=tag.id,
-                name=tag.name,
-                tag_type=tag.tag_type,
-                description=tag.description,
-                is_active=tag.is_active,
-                created_at=tag.created_at,
-                executive_count=exec_count,
+    from app.config import settings as _settings
+    from app.core.cache import NS, get_or_compute
+
+    async def _build() -> TagListResponse:
+        tags = await list_tags(db, tag_type=tag_type)
+        items = []
+        for tag in tags:
+            exec_count = await get_tag_executive_count(db, tag.id)
+            items.append(
+                TagResponse(
+                    id=tag.id,
+                    name=tag.name,
+                    tag_type=tag.tag_type,
+                    description=tag.description,
+                    is_active=tag.is_active,
+                    created_at=tag.created_at,
+                    executive_count=exec_count,
+                )
             )
-        )
-    return TagListResponse(items=items, total=len(items))
+        return TagListResponse(items=items, total=len(items))
+
+    return await get_or_compute(
+        NS.TAGS,
+        f"list:type={tag_type.value if tag_type else 'all'}",
+        _settings.CACHE_TTL_MASTER_DATA,
+        _build,
+    )
 
 
 @router.patch("/{tag_id}", response_model=TagResponse)
@@ -114,6 +127,8 @@ async def update_existing_tag(
         description=body.description,
         is_active=body.is_active,
     )
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.TAGS)
     exec_count = await get_tag_executive_count(db, tag.id)
     return TagResponse(
         id=tag.id,
@@ -134,6 +149,8 @@ async def delete_tag(
 ):
     """Soft-delete a tag (set is_active=False). Partner only."""
     tag = await deactivate_tag(db, tag_id)
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.TAGS)
     return {"message": f"Tag '{tag.name}' has been deactivated"}
 
 
@@ -155,6 +172,8 @@ async def assign_tag(
         tag_id=body.tag_id,
         assigned_by=current_user.id,
     )
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.TAGS)
     # Fetch names for response
     from sqlalchemy import select
     from app.models.tag import Tag
@@ -189,6 +208,8 @@ async def bulk_assign_tag_endpoint(
         tag_id=body.tag_id,
         assigned_by=current_user.id,
     )
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.TAGS)
     return {
         "message": f"Tag assigned to {len(assignments)} executive(s)",
         "assigned_count": len(assignments),
@@ -205,6 +226,8 @@ async def unassign_tag(
 ):
     """Remove a tag from an executive. Manager/Partner."""
     await remove_tag_from_executive(db, executive_id, tag_id)
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.TAGS)
     return {"message": "Tag removed from executive"}
 
 

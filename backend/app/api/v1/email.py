@@ -24,28 +24,37 @@ async def get_email_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Get current email configuration status (Partner only)."""
-    result = await db.execute(
-        select(EmailConfig).order_by(EmailConfig.created_at.desc()).limit(1)
-    )
-    config = result.scalar_one_or_none()
+    from app.config import settings as _settings
+    from app.core.cache import NS, get_or_compute
 
-    if not config:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Email not configured yet. Use POST /email/setup to configure.",
+    async def _build() -> EmailConfigResponse:
+        result = await db.execute(
+            select(EmailConfig).order_by(EmailConfig.created_at.desc()).limit(1)
+        )
+        config = result.scalar_one_or_none()
+        if not config:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Email not configured yet. Use POST /email/setup to configure.",
+            )
+        return EmailConfigResponse(
+            id=config.id,
+            sender_email=config.sender_email,
+            smtp_host=config.smtp_host,
+            smtp_port=config.smtp_port,
+            smtp_user=config.smtp_user,
+            use_tls=config.use_tls,
+            is_configured=True,
+            configured_by=config.configured_by,
+            created_at=config.created_at,
+            updated_at=config.updated_at,
         )
 
-    return EmailConfigResponse(
-        id=config.id,
-        sender_email=config.sender_email,
-        smtp_host=config.smtp_host,
-        smtp_port=config.smtp_port,
-        smtp_user=config.smtp_user,
-        use_tls=config.use_tls,
-        is_configured=True,
-        configured_by=config.configured_by,
-        created_at=config.created_at,
-        updated_at=config.updated_at,
+    return await get_or_compute(
+        NS.EMAIL_CONFIG,
+        "current",
+        _settings.CACHE_TTL_MASTER_DATA,
+        _build,
     )
 
 
@@ -84,6 +93,10 @@ async def setup_email(
     )
     db.add(email_config)
     await db.flush()
+
+    # Invalidate email config cache (this row is read by send_email on every send)
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.EMAIL_CONFIG)
 
     return EmailConfigResponse(
         id=email_config.id,

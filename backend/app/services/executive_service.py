@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import AccountStatus, AuditEventType, UserRole
+from app.core.cache import NS, bump_version, cached
 from app.models.executive_assignment import ExecutiveClientAssignment
 from app.models.filing import ITRFiling
 from app.models.user import User
@@ -63,6 +64,8 @@ async def deactivate_executive(db: AsyncSession, executive_id: UUID, deactivated
     )
 
     await db.flush()
+    # Invalidate auth-user cache so deactivation takes effect immediately
+    await bump_version(NS.USER_BY_ID)
     return executive
 
 
@@ -85,6 +88,7 @@ async def reactivate_executive(db: AsyncSession, executive_id: UUID, reactivated
     )
 
     await db.flush()
+    await bump_version(NS.USER_BY_ID)
     return executive
 
 
@@ -142,4 +146,23 @@ async def assign_executive_to_client(
     )
 
     await db.flush()
+    # Invalidate exec→client and partner-client-list caches
+    await bump_version(NS.EXEC_CLIENTS)
+    await bump_version(NS.PARTNER_CLIENT_IDS)
+    await bump_version(NS.DASHBOARD_SUMMARY)
     return assignment
+
+
+@cached(NS.EXEC_CLIENTS, ttl=30, key_builder=lambda db, executive_id: str(executive_id))
+async def get_executive_client_ids(
+    db: AsyncSession,
+    executive_id: UUID,
+) -> list[UUID]:
+    """Return active client IDs assigned to an executive (cached 30s)."""
+    result = await db.execute(
+        select(ExecutiveClientAssignment.client_id).where(
+            ExecutiveClientAssignment.executive_id == executive_id,
+            ExecutiveClientAssignment.is_active == True,
+        )
+    )
+    return [row[0] for row in result.all()]

@@ -5,9 +5,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api.v1.router import api_router
 from app.config import settings
+from app.core.cache import close_cache, init_cache
 from app.core.security import get_current_user
 import sys
 
@@ -29,8 +31,10 @@ async def lifespan(app: FastAPI):
     # ── Startup ──
     await _ensure_database_exists()
     await _create_tables()
+    await _ensure_perf_indexes()
     await _seed_admin_user()
     await _seed_dashboard_user()
+    await init_cache()
     
 
     try:
@@ -40,7 +44,8 @@ async def lifespan(app: FastAPI):
         logger.warning("MinIO bucket initialization skipped — service may not be available")
 
     yield
-    # ── Shutdown (nothing needed) ──
+    # ── Shutdown ──
+    await close_cache()
 
 
 app = FastAPI(
@@ -61,6 +66,10 @@ instrumentator = Instrumentator(
 )
 instrumentator.instrument(app)
 instrumentator.expose(app, endpoint="/metrics")
+
+# Gzip large responses (dashboards, reports, lists)
+if settings.GZIP_MIN_SIZE > 0:
+    app.add_middleware(GZipMiddleware, minimum_size=settings.GZIP_MIN_SIZE)
 
 # CORS Middleware
 app.add_middleware(
@@ -150,6 +159,57 @@ async def _create_tables():
         await _cleanup_manager_tags()
     except Exception as e:
         logger.warning(f"Table creation skipped: {e}")
+
+
+async def _ensure_perf_indexes():
+    """Create performance indexes if they don't already exist.
+
+    All statements use ``CREATE INDEX IF NOT EXISTS`` so this is idempotent
+    and safe to run on every startup. We do this in code (not Alembic) per
+    project convention.
+    """
+    import asyncpg
+
+    statements = [
+        # itr_filings hot filters
+        "CREATE INDEX IF NOT EXISTS ix_filings_client_fy ON itr_filings (client_id, financial_year)",
+        "CREATE INDEX IF NOT EXISTS ix_filings_executive_status ON itr_filings (assigned_executive_id, status)",
+        "CREATE INDEX IF NOT EXISTS ix_filings_status ON itr_filings (status)",
+        # latest computation per filing  ─ the dashboard summary hot path
+        "CREATE INDEX IF NOT EXISTS ix_filing_comp_filing_version ON filing_computations (filing_id, version DESC)",
+        # completed docs lookup
+        "CREATE INDEX IF NOT EXISTS ix_completed_doc_filing_type ON filing_completed_docs (filing_id, doc_type)",
+        # assignment scopes
+        "CREATE INDEX IF NOT EXISTS ix_mgr_exec_active ON manager_executive_assignments (manager_id, is_active)",
+        "CREATE INDEX IF NOT EXISTS ix_mgr_client_active ON manager_client_assignments (manager_id, is_active)",
+        "CREATE INDEX IF NOT EXISTS ix_exec_client_exec_active ON executive_client_assignments (executive_id, is_active)",
+        "CREATE INDEX IF NOT EXISTS ix_exec_client_client_active ON executive_client_assignments (client_id, is_active)",
+        # users
+        "CREATE INDEX IF NOT EXISTS ix_users_role_active ON users (role, is_active)",
+        # notifications
+        "CREATE INDEX IF NOT EXISTS ix_notif_user_read_created ON notifications (user_id, is_read, created_at DESC)",
+    ]
+
+    try:
+        conn = await asyncpg.connect(
+            host=settings.POSTGRES_HOST,
+            port=settings.POSTGRES_PORT,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            database=settings.POSTGRES_DB,
+        )
+        try:
+            for stmt in statements:
+                try:
+                    await conn.execute(stmt)
+                except Exception as e:
+                    # Table may not exist on a brand-new DB; ignore.
+                    logger.debug(f"Index ensure skipped ({stmt[:60]}...): {e}")
+        finally:
+            await conn.close()
+        logger.info("Performance indexes ensured.")
+    except Exception as e:
+        logger.warning(f"Index ensure failed: {e}")
 
 
 async def _sync_pg_enums():
