@@ -210,37 +210,53 @@ async def list_clients(
     result = await db.execute(query)
     users = result.scalars().all()
 
+    if not users:
+        return ClientListResponse(items=[], total=total, page=page, page_size=page_size)
+
+    user_ids = [u.id for u in users]
+
+    # ── Batch-fetch active executive assignments for the page (was N+1) ──
+    assign_result = await db.execute(
+        select(ExecutiveClientAssignment).where(
+            ExecutiveClientAssignment.client_id.in_(user_ids),
+            ExecutiveClientAssignment.is_active == True,
+        )
+    )
+    assignments_by_client = {a.client_id: a for a in assign_result.scalars().all()}
+
+    # ── Batch-fetch executive names for those assignments ──
+    exec_ids = list({a.executive_id for a in assignments_by_client.values()})
+    exec_name_by_id: dict = {}
+    if exec_ids:
+        exec_rows = await db.execute(
+            select(User.id, User.full_name).where(User.id.in_(exec_ids))
+        )
+        exec_name_by_id = {row[0]: row[1] for row in exec_rows.all()}
+
+    # ── Batch-fetch active filings for the page (was N+1) ──
+    filings_result = await db.execute(
+        select(ITRFiling.client_id, ITRFiling.financial_year, ITRFiling.status).where(
+            ITRFiling.client_id.in_(user_ids),
+            ITRFiling.status.notin_(["COMPLETED", "HALTED"]),
+        )
+    )
+    filings_by_client: dict = {}
+    for cid, fy, st in filings_result.all():
+        filings_by_client.setdefault(cid, []).append((fy, st))
+
     # Build response items
     items = []
     for user in users:
-        # Get assignment
-        assign_result = await db.execute(
-            select(ExecutiveClientAssignment).where(
-                ExecutiveClientAssignment.client_id == user.id,
-                ExecutiveClientAssignment.is_active == True,
-            )
-        )
-        assignment = assign_result.scalar_one_or_none()
-
+        assignment = assignments_by_client.get(user.id)
         exec_name = None
         exec_id = None
         if assignment:
-            exec_result = await db.execute(select(User).where(User.id == assignment.executive_id))
-            exec_user = exec_result.scalar_one_or_none()
-            if exec_user:
-                exec_name = exec_user.full_name
-                exec_id = exec_user.id
+            exec_id = assignment.executive_id
+            exec_name = exec_name_by_id.get(exec_id)
 
-        # Get active filing years
-        fy_result = await db.execute(
-            select(ITRFiling.financial_year, ITRFiling.status).where(
-                ITRFiling.client_id == user.id,
-                ITRFiling.status.notin_(["COMPLETED", "HALTED"]),
-            )
-        )
-        filings = fy_result.all()
-        active_years = [f[0] for f in filings]
-        current_state = filings[0][1].value if filings else None
+        user_filings = filings_by_client.get(user.id, [])
+        active_years = [f[0] for f in user_filings]
+        current_state = user_filings[0][1].value if user_filings else None
 
         items.append(
             ClientListItem(

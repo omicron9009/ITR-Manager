@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import AccountStatus, AuditEventType, FilingStatus, UserRole
+from app.core.cache import NS, bump_version, cached
 from app.models.executive_assignment import ExecutiveClientAssignment
 from app.models.filing import ITRFiling
 from app.models.manager_client_assignment import ManagerClientAssignment
@@ -143,6 +144,12 @@ async def assign_executive_to_manager(
         },
     )
 
+    # Invalidate scope caches — team composition changed
+    await bump_version(NS.MANAGER_TEAM_EXECS)
+    await bump_version(NS.MANAGER_CLIENTS)
+    await bump_version(NS.EXEC_CLIENTS)
+    await bump_version(NS.DASHBOARD_SUMMARY)
+
     return assignment
 
 
@@ -180,12 +187,24 @@ async def unassign_executive_from_manager(
         },
     )
 
+    await bump_version(NS.MANAGER_TEAM_EXECS)
+    await bump_version(NS.MANAGER_CLIENTS)
+    await bump_version(NS.DASHBOARD_SUMMARY)
+
 
 async def get_manager_team_executive_ids(
     db: AsyncSession,
     manager_id: UUID,
 ) -> list[UUID]:
     """Get all active executive IDs managed by a manager."""
+    return await _get_manager_team_executive_ids_cached(db, manager_id)
+
+
+@cached(NS.MANAGER_TEAM_EXECS, ttl=30, key_builder=lambda db, manager_id: str(manager_id))
+async def _get_manager_team_executive_ids_cached(
+    db: AsyncSession,
+    manager_id: UUID,
+) -> list[UUID]:
     result = await db.execute(
         select(ManagerExecutiveAssignment.executive_id).where(
             ManagerExecutiveAssignment.manager_id == manager_id,
@@ -200,6 +219,14 @@ async def get_manager_team_client_ids(
     manager_id: UUID,
 ) -> list[UUID]:
     """Get all active client IDs directly assigned to a manager."""
+    return await _get_manager_team_client_ids_cached(db, manager_id)
+
+
+@cached(NS.MANAGER_CLIENTS, ttl=30, key_builder=lambda db, manager_id: str(manager_id))
+async def _get_manager_team_client_ids_cached(
+    db: AsyncSession,
+    manager_id: UUID,
+) -> list[UUID]:
     result = await db.execute(
         select(ManagerClientAssignment.client_id).where(
             ManagerClientAssignment.manager_id == manager_id,
@@ -297,6 +324,9 @@ async def assign_client_to_manager(
         cta_label="View Client",
     )
 
+    await bump_version(NS.MANAGER_CLIENTS)
+    await bump_version(NS.DASHBOARD_SUMMARY)
+
     return assignment
 
 
@@ -333,6 +363,9 @@ async def unassign_client_from_manager(
             "client_id": str(client_id),
         },
     )
+
+    await bump_version(NS.MANAGER_CLIENTS)
+    await bump_version(NS.DASHBOARD_SUMMARY)
 
 
 async def get_client_manager_id(

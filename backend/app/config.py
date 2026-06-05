@@ -75,5 +75,20 @@ class Settings(BaseSettings):
     SERVER_HOST: str = "0.0.0.0"
     SERVER_PORT: int = 8000
 
+    # ─── Cache (Redis) ──────────────────────────────────────
+    # Toggle the entire cache layer. When false, all cache ops are no-ops.
+    CACHE_ENABLED: bool = True
+    REDIS_URL: str = "redis://redis:6379/0"
+
+    # TTLs (seconds) — keep short; long TTLs hide bugs
+    CACHE_TTL_USER: int = 5            # auth user-by-id
+    CACHE_TTL_SCOPE_IDS: int = 30      # manager team / exec clients / partner client ids
+    CACHE_TTL_MASTER_DATA: int = 300   # doc types, form fields, tags, email config
+    CACHE_TTL_DASHBOARD: int = 15      # /dashboard/summary
+    CACHE_TTL_REPORT: int = 300        # /reports/dashboard
+
+    # Gzip compression threshold (bytes). 0 disables.
+    GZIP_MIN_SIZE: int = 1024
+
 
 settings = Settings()

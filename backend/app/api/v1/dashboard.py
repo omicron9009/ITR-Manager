@@ -128,7 +128,29 @@ async def get_dashboard_summary(
     - Manager: filings of their team's clients
     - Executive: only assigned client filings
     """
-    # Build base query depending on role
+    from app.config import settings as _settings
+    from app.core.cache import NS, get_or_compute
+
+    cache_key = f"{current_user.role.value}:{current_user.id}"
+
+    async def _build() -> DashboardSummaryResponse:
+        return await _build_dashboard_summary(db, current_user)
+
+    return await get_or_compute(
+        NS.DASHBOARD_SUMMARY,
+        cache_key,
+        _settings.CACHE_TTL_DASHBOARD,
+        _build,
+    )
+
+
+async def _build_dashboard_summary(
+    db: AsyncSession, current_user: User
+) -> DashboardSummaryResponse:
+    """Compute dashboard summary. Uses set-based queries — no N+1."""
+    from collections import Counter as _Counter
+
+    # ── Base filter (role-scoped) ──
     base_filter = []
     if current_user.role == UserRole.MANAGER:
         from app.services.manager_service import get_manager_team_client_ids
@@ -140,26 +162,36 @@ async def get_dashboard_summary(
     elif current_user.role == UserRole.EXECUTIVE:
         base_filter.append(ITRFiling.assigned_executive_id == current_user.id)
 
-    # Filing status counts
-    counters = []
-    for status in FilingStatus:
-        if status == FilingStatus.HALTED:
-            continue
-        count_query = select(func.count()).select_from(ITRFiling).where(
-            ITRFiling.status == status, *base_filter
-        )
-        result = await db.execute(count_query)
-        count = result.scalar() or 0
-        counters.append(FilingStatusCounter(
-            status=status,
-            count=count,
-            label=status.value.replace("_", " ").title(),
-        ))
+    # ── Filing status counts (single GROUP BY query) ──
+    status_count_result = await db.execute(
+        select(ITRFiling.status, func.count(ITRFiling.id))
+        .where(*base_filter)
+        .group_by(ITRFiling.status)
+    )
+    status_count_map = {row[0]: row[1] for row in status_count_result.all()}
 
-    # Total clients
+    counters = [
+        FilingStatusCounter(
+            status=st,
+            count=status_count_map.get(st, 0),
+            label=st.value.replace("_", " ").title(),
+        )
+        for st in FilingStatus
+        if st != FilingStatus.HALTED
+    ]
+
+    # ── Total clients ──
     if current_user.role == UserRole.PARTNER:
         client_count_result = await db.execute(
             select(func.count()).select_from(User).where(User.role == UserRole.CLIENT)
+        )
+    elif current_user.role == UserRole.MANAGER:
+        from app.models.manager_client_assignment import ManagerClientAssignment
+        client_count_result = await db.execute(
+            select(func.count()).select_from(ManagerClientAssignment).where(
+                ManagerClientAssignment.manager_id == current_user.id,
+                ManagerClientAssignment.is_active == True,
+            )
         )
     else:
         client_count_result = await db.execute(
@@ -170,7 +202,7 @@ async def get_dashboard_summary(
         )
     total_clients = client_count_result.scalar() or 0
 
-    # Pending verification count
+    # ── Pending verification count (global; same across roles) ──
     pending_result = await db.execute(
         select(func.count()).select_from(User).where(
             User.role == UserRole.CLIENT,
@@ -179,36 +211,37 @@ async def get_dashboard_summary(
     )
     pending_count = pending_result.scalar() or 0
 
-    # Total active filings
-    active_result = await db.execute(
-        select(func.count()).select_from(ITRFiling).where(
-            ITRFiling.status.notin_([FilingStatus.COMPLETED, FilingStatus.HALTED]),
-            *base_filter,
-        )
+    # ── Total active filings (derived from status_count_map) ──
+    total_active = sum(
+        cnt
+        for st, cnt in status_count_map.items()
+        if st not in (FilingStatus.COMPLETED, FilingStatus.HALTED)
     )
-    total_active = active_result.scalar() or 0
 
-    # ── Computation sub-state counters ──
-    # Get all filings in COMPUTATION state (scoped by role)
-    comp_filings_result = await db.execute(
+    # ── Computation sub-state counters (single window query — was N+1) ──
+    comp_filing_ids_result = await db.execute(
         select(ITRFiling.id).where(ITRFiling.status == FilingStatus.COMPUTATION, *base_filter)
     )
-    comp_filing_ids = [row[0] for row in comp_filings_result.all()]
+    comp_filing_ids = [row[0] for row in comp_filing_ids_result.all()]
 
-    from collections import Counter
-    sub_state_counts: Counter = Counter()
-
+    sub_state_counts: _Counter = _Counter()
     if comp_filing_ids:
-        # For each computation-state filing, get the latest computation status
+        # Latest computation per filing in ONE query (window function).
+        rn = func.row_number().over(
+            partition_by=FilingComputation.filing_id,
+            order_by=FilingComputation.version.desc(),
+        ).label("rn")
+        subq = (
+            select(FilingComputation.filing_id, FilingComputation.status, rn)
+            .where(FilingComputation.filing_id.in_(comp_filing_ids))
+            .subquery()
+        )
+        latest_result = await db.execute(
+            select(subq.c.filing_id, subq.c.status).where(subq.c.rn == 1)
+        )
+        latest_map = {row[0]: row[1] for row in latest_result.all()}
         for fid in comp_filing_ids:
-            latest_comp_result = await db.execute(
-                select(FilingComputation.status)
-                .where(FilingComputation.filing_id == fid)
-                .order_by(FilingComputation.version.desc())
-                .limit(1)
-            )
-            latest_status = latest_comp_result.scalar()
-            sub_state_counts[latest_status] += 1  # None means not uploaded
+            sub_state_counts[latest_map.get(fid)] += 1  # None means not uploaded
 
     computation_sub_counters = [
         ComputationSubStateCounter(
@@ -219,35 +252,50 @@ async def get_dashboard_summary(
         for comp_st, cnt in sub_state_counts.items()
     ]
 
-    # ── Filing (completed docs) sub-state counters ──
-    # Get all filings in FILING state (scoped by role)
-    filing_phase_result = await db.execute(
+    # ── Filing (completed docs) sub-state counters (single batch query — was N+1) ──
+    filing_phase_ids_result = await db.execute(
         select(ITRFiling.id).where(ITRFiling.status == FilingStatus.FILING, *base_filter)
     )
-    filing_phase_ids = [row[0] for row in filing_phase_result.all()]
+    filing_phase_ids = [row[0] for row in filing_phase_ids_result.all()]
 
-    filing_doc_sub_counts: Counter = Counter()
-    required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
+    filing_doc_sub_counts: _Counter = _Counter()
+    required_doc_types = {
+        CompletedDocType.ITR_ACKNOWLEDGEMENT,
+        CompletedDocType.INVOICE,
+        CompletedDocType.ITR_JSON,
+        CompletedDocType.ITR_FORM,
+        CompletedDocType.TAX_PAID_COMPUTATION,
+    }
 
     if filing_phase_ids:
+        from collections import defaultdict
+        docs_by_filing: dict = defaultdict(list)
+        rows = await db.execute(
+            select(
+                FilingCompletedDoc.filing_id,
+                FilingCompletedDoc.doc_type,
+                FilingCompletedDoc.status,
+            ).where(FilingCompletedDoc.filing_id.in_(filing_phase_ids))
+        )
+        for fid, dtype, dstatus in rows.all():
+            docs_by_filing[fid].append((dtype, dstatus))
+
         for fid in filing_phase_ids:
-            # Get all completed docs for this filing
-            docs_result = await db.execute(
-                select(FilingCompletedDoc).where(FilingCompletedDoc.filing_id == fid)
-            )
-            docs = docs_result.scalars().all()
-            existing_types = {d.doc_type for d in docs}
+            docs = docs_by_filing.get(fid, [])
+            existing_types = {d[0] for d in docs}
 
             if not required_doc_types.issubset(existing_types):
                 filing_doc_sub_counts["PENDING_UPLOAD"] += 1
             else:
-                # All uploaded — determine lowest approval state
-                statuses = [d.status for d in docs if d.doc_type in required_doc_types]
+                statuses = [s for (t, s) in docs if t in required_doc_types]
                 if any(s == CompletedDocStatus.MANAGER_REJECTED for s in statuses):
                     filing_doc_sub_counts["MANAGER_REJECTED"] += 1
                 elif all(s == CompletedDocStatus.PARTNER_APPROVED for s in statuses):
                     filing_doc_sub_counts["ALL_PARTNER_APPROVED"] += 1
-                elif any(s == CompletedDocStatus.MANAGER_APPROVED for s in statuses) or all(s in (CompletedDocStatus.MANAGER_APPROVED, CompletedDocStatus.PARTNER_APPROVED) for s in statuses):
+                elif any(s == CompletedDocStatus.MANAGER_APPROVED for s in statuses) or all(
+                    s in (CompletedDocStatus.MANAGER_APPROVED, CompletedDocStatus.PARTNER_APPROVED)
+                    for s in statuses
+                ):
                     filing_doc_sub_counts["AWAITING_PARTNER_APPROVAL"] += 1
                 else:
                     filing_doc_sub_counts["AWAITING_MANAGER_APPROVAL"] += 1

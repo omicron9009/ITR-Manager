@@ -173,6 +173,10 @@ async def activate_client(
     create_client_directory(str(client_id), client.full_name)
 
     await db.flush()
+    # Invalidate auth user cache so the client's new ACTIVE status is honored immediately
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.USER_BY_ID)
+    await bump_version(NS.DASHBOARD_SUMMARY)
     return client
 
 
@@ -211,6 +215,8 @@ async def reject_client(
     )
 
     await db.flush()
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.USER_BY_ID)
     return client
 
 
