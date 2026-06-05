@@ -52,7 +52,7 @@ services:
       - "traefik.http.routers.minio.middlewares=minio-cors@docker,minio-ratelimit@docker"
       - "traefik.http.services.minio.loadbalancer.server.port=9000"
       # CORS middleware: allow browser cross-origin access to presigned URLs
-      - "traefik.http.middlewares.minio-cors.headers.accesscontrolalloworiginlist=https://workpartners.co.in,http://localhost:3000"
+      - "traefik.http.middlewares.minio-cors.headers.accesscontrolalloworiginlist=https://workpartners.co.in,https://aikar.workpartners.co.in,http://localhost:3000"
       - "traefik.http.middlewares.minio-cors.headers.accesscontrolallowmethods=GET,PUT,HEAD,OPTIONS"
       - "traefik.http.middlewares.minio-cors.headers.accesscontrolallowheaders=*"
       - "traefik.http.middlewares.minio-cors.headers.accesscontrolmaxage=3600"
