@@ -162,9 +162,8 @@ def _build_professional_email(
 
     # CTA button
     cta_html = ""
-    if action_url_path and cta_label:
-        safe_path = html.escape(action_url_path)
-        full_url = f"{frontend_url}{safe_path}"
+    if cta_label:
+        full_url = frontend_url
         cta_html = f"""
         <div style="text-align:center;margin:24px 0;">
             <a href="{full_url}" style="display:inline-block;background:#1a56db;color:#ffffff;
