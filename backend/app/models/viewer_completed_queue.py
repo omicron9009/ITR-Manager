@@ -20,6 +20,11 @@ class ViewerCompletedQueue(Base):
     financial_year = Column(String(20), nullable=False)
     completed_at = Column(DateTime(timezone=True), nullable=False)
     completed_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Executive + Manager snapshots (captured at completion time)
+    executive_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    executive_name = Column(String(255), nullable=True)
+    manager_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    manager_name = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     dismissed_at = Column(DateTime(timezone=True), nullable=True)
 

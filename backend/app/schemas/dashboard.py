@@ -338,6 +338,10 @@ class CompletedQueueItem(BaseModel):
     financial_year: str
     completed_at: datetime
     completed_by_name: Optional[str] = None
+    executive_id: Optional[UUID] = None
+    executive_name: Optional[str] = None
+    manager_id: Optional[UUID] = None
+    manager_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

@@ -981,6 +981,8 @@ async def mark_payment_received(
 
     # Queue for dashboard viewers
     from app.models.viewer_completed_queue import ViewerCompletedQueue
+    from app.models.executive_assignment import ExecutiveClientAssignment
+    from app.models.manager_executive_assignment import ManagerExecutiveAssignment
 
     viewer_result = await db.execute(
         select(User).where(User.role == UserRole.DASHBOARD_USER, User.is_active == True)
@@ -991,6 +993,38 @@ async def mark_payment_received(
     client_result = await db.execute(select(User.full_name).where(User.id == filing.client_id))
     client_name = client_result.scalar_one_or_none() or "Client"
 
+    # Get active executive for this client
+    exec_assign_result = await db.execute(
+        select(ExecutiveClientAssignment)
+        .where(
+            ExecutiveClientAssignment.client_id == filing.client_id,
+            ExecutiveClientAssignment.is_active == True,
+        )
+    )
+    exec_assign = exec_assign_result.scalar_one_or_none()
+    executive_id = None
+    executive_name = None
+    manager_id = None
+    manager_name = None
+    if exec_assign:
+        executive_id = exec_assign.executive_id
+        exec_name_result = await db.execute(select(User.full_name).where(User.id == exec_assign.executive_id))
+        executive_name = exec_name_result.scalar_one_or_none()
+
+        # Get active manager for this executive
+        mgr_assign_result = await db.execute(
+            select(ManagerExecutiveAssignment)
+            .where(
+                ManagerExecutiveAssignment.executive_id == exec_assign.executive_id,
+                ManagerExecutiveAssignment.is_active == True,
+            )
+        )
+        mgr_assign = mgr_assign_result.scalar_one_or_none()
+        if mgr_assign:
+            manager_id = mgr_assign.manager_id
+            mgr_name_result = await db.execute(select(User.full_name).where(User.id == mgr_assign.manager_id))
+            manager_name = mgr_name_result.scalar_one_or_none()
+
     for viewer in viewers:
         db.add(ViewerCompletedQueue(
             viewer_id=viewer.id,
@@ -999,6 +1033,10 @@ async def mark_payment_received(
             financial_year=filing.financial_year,
             completed_at=filing.completed_at,
             completed_by=current_user.id,
+            executive_id=executive_id,
+            executive_name=executive_name,
+            manager_id=manager_id,
+            manager_name=manager_name,
         ))
 
     await db.commit()
