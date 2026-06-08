@@ -83,9 +83,10 @@ class Settings(BaseSettings):
     # TTLs (seconds) — keep short; long TTLs hide bugs
     CACHE_TTL_USER: int = 5            # auth user-by-id
     CACHE_TTL_SCOPE_IDS: int = 30      # manager team / exec clients / partner client ids
-    CACHE_TTL_MASTER_DATA: int = 300   # doc types, form fields, tags, email config
+    CACHE_TTL_TAGS: int = 5            # tags list (has N+1 exec-count queries, keep cached but short)
+    CACHE_TTL_CLIENT_LIST: int = 10    # /clients paginated list
     CACHE_TTL_DASHBOARD: int = 15      # /dashboard/summary
-    CACHE_TTL_REPORT: int = 300        # /reports/dashboard
+    CACHE_TTL_REPORT: int = 60         # /reports/dashboard (reduced from 300; bumped on mutations)
 
     # Gzip compression threshold (bytes). 0 disables.
     GZIP_MIN_SIZE: int = 1024

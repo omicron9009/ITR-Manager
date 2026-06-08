@@ -42,7 +42,7 @@ _MISS: Any = object()
 # Module-level state
 _redis: Optional["Redis"] = None
 _l1: TTLCache = TTLCache(maxsize=4096, ttl=300)
-_version_l1: TTLCache = TTLCache(maxsize=512, ttl=10)
+_version_l1: TTLCache = TTLCache(maxsize=512, ttl=1)
 
 T = TypeVar("T")
 
@@ -274,3 +274,4 @@ class NS:
     EMAIL_CONFIG = "email_config"
     DASHBOARD_SUMMARY = "dashboard_summary"
     REPORT = "report"
+    CLIENT_LIST = "client_list"
