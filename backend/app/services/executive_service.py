@@ -150,6 +150,7 @@ async def assign_executive_to_client(
     await bump_version(NS.EXEC_CLIENTS)
     await bump_version(NS.PARTNER_CLIENT_IDS)
     await bump_version(NS.DASHBOARD_SUMMARY)
+    await bump_version(NS.CLIENT_LIST)
     return assignment
 
 

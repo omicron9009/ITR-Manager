@@ -164,9 +164,18 @@ async def list_clients(
     - Executive: sees only assigned clients
     - Client: not permitted
     """
+    from app.config import settings as _settings
+    from app.core.cache import NS, cache_get, cache_set, _MISS
+
     if current_user.role == UserRole.CLIENT:
         from fastapi import HTTPException, status
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    # Cache key encodes the full filter + user scope
+    cache_key = f"{current_user.id}:{page}:{page_size}:{search}:{account_status}:{financial_year}"
+    cached = await cache_get(NS.CLIENT_LIST, cache_key)
+    if cached is not _MISS:
+        return cached
 
     # Base query
     query = select(User).where(User.role == UserRole.CLIENT)
@@ -200,6 +209,13 @@ async def list_clients(
             (User.full_name.ilike(search_filter)) | (User.email.ilike(search_filter))
         )
 
+    # Financial year filter — subquery to avoid row duplication from multi-filing clients
+    if financial_year:
+        fy_sub = select(ITRFiling.client_id).where(
+            ITRFiling.financial_year == financial_year
+        ).scalar_subquery()
+        query = query.where(User.id.in_(fy_sub))
+
     # Count
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -211,7 +227,9 @@ async def list_clients(
     users = result.scalars().all()
 
     if not users:
-        return ClientListResponse(items=[], total=total, page=page, page_size=page_size)
+        response = ClientListResponse(items=[], total=total, page=page, page_size=page_size)
+        await cache_set(NS.CLIENT_LIST, cache_key, response, _settings.CACHE_TTL_CLIENT_LIST)
+        return response
 
     user_ids = [u.id for u in users]
 
@@ -234,11 +252,12 @@ async def list_clients(
         exec_name_by_id = {row[0]: row[1] for row in exec_rows.all()}
 
     # ── Batch-fetch active filings for the page (was N+1) ──
+    # ORDER BY created_at DESC ensures [0] is always the most recent filing
     filings_result = await db.execute(
         select(ITRFiling.client_id, ITRFiling.financial_year, ITRFiling.status).where(
             ITRFiling.client_id.in_(user_ids),
             ITRFiling.status.notin_(["COMPLETED", "HALTED"]),
-        )
+        ).order_by(ITRFiling.created_at.desc())
     )
     filings_by_client: dict = {}
     for cid, fy, st in filings_result.all():
@@ -273,7 +292,9 @@ async def list_clients(
             )
         )
 
-    return ClientListResponse(items=items, total=total, page=page, page_size=page_size)
+    response = ClientListResponse(items=items, total=total, page=page, page_size=page_size)
+    await cache_set(NS.CLIENT_LIST, cache_key, response, _settings.CACHE_TTL_CLIENT_LIST)
+    return response
 
 
 # ─── PUT /clients/me/income-heads ────────────────────────────

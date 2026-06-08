@@ -107,7 +107,7 @@ async def list_all_tags(
     return await get_or_compute(
         NS.TAGS,
         f"list:type={tag_type.value if tag_type else 'all'}",
-        _settings.CACHE_TTL_MASTER_DATA,
+        _settings.CACHE_TTL_TAGS,
         _build,
     )
 

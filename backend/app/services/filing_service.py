@@ -121,4 +121,10 @@ async def transition_filing_status(
     )
 
     await db.flush()
+
+    # Invalidate caches that aggregate filing data
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.REPORT)
+    await bump_version(NS.DASHBOARD_SUMMARY)
+
     return filing

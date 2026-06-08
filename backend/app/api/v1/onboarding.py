@@ -81,26 +81,15 @@ async def list_form_fields(
     db: AsyncSession = Depends(get_db),
 ):
     """List all onboarding form fields."""
-    from app.config import settings as _settings
-    from app.core.cache import NS, get_or_compute
-
-    async def _build() -> FormFieldListResponse:
-        query = select(OnboardingFormField)
-        if not include_inactive:
-            query = query.where(OnboardingFormField.is_active == True)
-        query = query.order_by(OnboardingFormField.display_order)
-        result = await db.execute(query)
-        fields = result.scalars().all()
-        return FormFieldListResponse(
-            items=[FormFieldResponse.model_validate(f) for f in fields],
-            total=len(fields),
-        )
-
-    return await get_or_compute(
-        NS.FORM_FIELDS,
-        f"all:incl={int(include_inactive)}",
-        _settings.CACHE_TTL_MASTER_DATA,
-        _build,
+    query = select(OnboardingFormField)
+    if not include_inactive:
+        query = query.where(OnboardingFormField.is_active == True)
+    query = query.order_by(OnboardingFormField.display_order)
+    result = await db.execute(query)
+    fields = result.scalars().all()
+    return FormFieldListResponse(
+        items=[FormFieldResponse.model_validate(f) for f in fields],
+        total=len(fields),
     )
 
 

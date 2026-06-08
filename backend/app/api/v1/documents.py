@@ -59,26 +59,15 @@ async def list_document_types(
     db: AsyncSession = Depends(get_db),
 ):
     """List all document types from master list."""
-    from app.config import settings as _settings
-    from app.core.cache import NS, get_or_compute
-
-    async def _build() -> MasterDocTypeListResponse:
-        query = select(MasterDocumentType)
-        if not include_inactive:
-            query = query.where(MasterDocumentType.is_active == True)
-        query = query.order_by(MasterDocumentType.display_order)
-        result = await db.execute(query)
-        items = result.scalars().all()
-        return MasterDocTypeListResponse(
-            items=[MasterDocTypeResponse.model_validate(i) for i in items],
-            total=len(items),
-        )
-
-    return await get_or_compute(
-        NS.MASTER_DOC_TYPES,
-        f"all:incl={int(include_inactive)}",
-        _settings.CACHE_TTL_MASTER_DATA,
-        _build,
+    query = select(MasterDocumentType)
+    if not include_inactive:
+        query = query.where(MasterDocumentType.is_active == True)
+    query = query.order_by(MasterDocumentType.display_order)
+    result = await db.execute(query)
+    items = result.scalars().all()
+    return MasterDocTypeListResponse(
+        items=[MasterDocTypeResponse.model_validate(i) for i in items],
+        total=len(items),
     )
 
 

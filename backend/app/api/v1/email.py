@@ -24,37 +24,26 @@ async def get_email_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Get current email configuration status (Partner only)."""
-    from app.config import settings as _settings
-    from app.core.cache import NS, get_or_compute
-
-    async def _build() -> EmailConfigResponse:
-        result = await db.execute(
-            select(EmailConfig).order_by(EmailConfig.created_at.desc()).limit(1)
+    result = await db.execute(
+        select(EmailConfig).order_by(EmailConfig.created_at.desc()).limit(1)
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Email not configured yet. Use POST /email/setup to configure.",
         )
-        config = result.scalar_one_or_none()
-        if not config:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Email not configured yet. Use POST /email/setup to configure.",
-            )
-        return EmailConfigResponse(
-            id=config.id,
-            sender_email=config.sender_email,
-            smtp_host=config.smtp_host,
-            smtp_port=config.smtp_port,
-            smtp_user=config.smtp_user,
-            use_tls=config.use_tls,
-            is_configured=True,
-            configured_by=config.configured_by,
-            created_at=config.created_at,
-            updated_at=config.updated_at,
-        )
-
-    return await get_or_compute(
-        NS.EMAIL_CONFIG,
-        "current",
-        _settings.CACHE_TTL_MASTER_DATA,
-        _build,
+    return EmailConfigResponse(
+        id=config.id,
+        sender_email=config.sender_email,
+        smtp_host=config.smtp_host,
+        smtp_port=config.smtp_port,
+        smtp_user=config.smtp_user,
+        use_tls=config.use_tls,
+        is_configured=True,
+        configured_by=config.configured_by,
+        created_at=config.created_at,
+        updated_at=config.updated_at,
     )
 
 

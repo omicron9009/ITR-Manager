@@ -186,8 +186,20 @@ async def _ensure_perf_indexes():
         "CREATE INDEX IF NOT EXISTS ix_exec_client_client_active ON executive_client_assignments (client_id, is_active)",
         # users
         "CREATE INDEX IF NOT EXISTS ix_users_role_active ON users (role, is_active)",
+        # users — client list hot path (role + status filter + created_at sort)
+        "CREATE INDEX IF NOT EXISTS ix_users_role_status_created ON users (role, account_status, created_at DESC)",
         # notifications
         "CREATE INDEX IF NOT EXISTS ix_notif_user_read_created ON notifications (user_id, is_read, created_at DESC)",
+        # itr_filings — client list active filings batch fetch
+        "CREATE INDEX IF NOT EXISTS ix_filings_client_status ON itr_filings (client_id, status)",
+    ]
+
+    # Trigram indexes for ILIKE '%...%' search on client name/email
+    # Requires pg_trgm extension — attempted separately so failure doesn't block other indexes
+    trgm_statements = [
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+        "CREATE INDEX IF NOT EXISTS ix_users_full_name_trgm ON users USING gin (full_name gin_trgm_ops)",
+        "CREATE INDEX IF NOT EXISTS ix_users_email_trgm ON users USING gin (email gin_trgm_ops)",
     ]
 
     try:
@@ -205,6 +217,12 @@ async def _ensure_perf_indexes():
                 except Exception as e:
                     # Table may not exist on a brand-new DB; ignore.
                     logger.debug(f"Index ensure skipped ({stmt[:60]}...): {e}")
+            # Trigram indexes — non-fatal if pg_trgm is unavailable
+            for stmt in trgm_statements:
+                try:
+                    await conn.execute(stmt)
+                except Exception as e:
+                    logger.debug(f"Trigram index skipped ({stmt[:60]}...): {e}")
         finally:
             await conn.close()
         logger.info("Performance indexes ensured.")

@@ -177,6 +177,7 @@ async def activate_client(
     from app.core.cache import NS, bump_version
     await bump_version(NS.USER_BY_ID)
     await bump_version(NS.DASHBOARD_SUMMARY)
+    await bump_version(NS.CLIENT_LIST)
     return client
 
 
@@ -217,6 +218,7 @@ async def reject_client(
     await db.flush()
     from app.core.cache import NS, bump_version
     await bump_version(NS.USER_BY_ID)
+    await bump_version(NS.CLIENT_LIST)
     return client
 
 
