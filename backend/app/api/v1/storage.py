@@ -685,7 +685,11 @@ async def partner_approve_completed_doc(
 
     # Check if ALL required docs are now PARTNER_APPROVED → auto-transition to PAYMENT
     if filing.status == FilingStatus.FILING:
-        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
+        # For no-fee clients, INVOICE is not required
+        if filing.no_fees_applicable:
+            required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
+        else:
+            required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
         approved_result = await db.execute(
             select(FilingCompletedDoc.doc_type).where(
                 FilingCompletedDoc.filing_id == filing.id,
@@ -702,13 +706,33 @@ async def partner_approve_completed_doc(
                 changed_by=current_user.id,
                 remarks="All required filed documents partner-approved",
             )
-            await create_notification(
-                db=db,
-                user_id=filing.client_id,
-                title="ITR Filed Successfully",
-                message=f"Your ITR for {filing.financial_year} has been filed. Please complete payment.",
-                related_filing_id=filing.id,
-            )
+
+            # For no-fee clients, auto-complete immediately (PAYMENT → COMPLETED)
+            if filing.no_fees_applicable:
+                from datetime import datetime as _dt
+                filing.payment_received_at = _dt.utcnow()
+                await transition_filing_status(
+                    db=db,
+                    filing=filing,
+                    to_status=FilingStatus.COMPLETED,
+                    changed_by=current_user.id,
+                    remarks="No fees applicable; auto-completed",
+                )
+                await create_notification(
+                    db=db,
+                    user_id=filing.client_id,
+                    title="Filing Completed",
+                    message=f"Your ITR for {filing.financial_year} has been filed and completed successfully. All documents are now available for download.",
+                    related_filing_id=filing.id,
+                )
+            else:
+                await create_notification(
+                    db=db,
+                    user_id=filing.client_id,
+                    title="ITR Filed Successfully",
+                    message=f"Your ITR for {filing.financial_year} has been filed. Please complete payment.",
+                    related_filing_id=filing.id,
+                )
 
     await db.commit()
     return {"message": f"{doc.doc_type.value} partner-approved successfully", "status": doc.status.value}

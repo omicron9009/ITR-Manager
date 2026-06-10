@@ -348,6 +348,9 @@ async def _sync_new_columns():
         ("viewer_completed_queue", "executive_name", "VARCHAR(255)", None),
         ("viewer_completed_queue", "manager_id", "UUID", None),
         ("viewer_completed_queue", "manager_name", "VARCHAR(255)", None),
+        # No fees applicable flag
+        ("client_profiles", "no_fees_applicable", "BOOLEAN NOT NULL", "'false'"),
+        ("itr_filings", "no_fees_applicable", "BOOLEAN NOT NULL", "'false'"),
     ]
 
     try:

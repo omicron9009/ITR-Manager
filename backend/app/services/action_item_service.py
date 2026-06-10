@@ -575,7 +575,9 @@ async def _get_filing_items_for_staff(
         # 9. MARK_PAYMENT_RECEIVED — in PAYMENT, all completed docs present
         if filing.status == FilingStatus.PAYMENT:
             existing_types = {cd.doc_type for cd in filing.completed_docs}
-            if _REQUIRED_COMPLETED_DOCS.issubset(existing_types):
+            # For no-fee clients, INVOICE is not required
+            required_docs = _REQUIRED_COMPLETED_DOCS - {CompletedDocType.INVOICE} if filing.no_fees_applicable else _REQUIRED_COMPLETED_DOCS
+            if required_docs.issubset(existing_types):
                 items.append(
                     ActionItemResponse(
                         type=ActionItemType.MARK_PAYMENT_RECEIVED,
