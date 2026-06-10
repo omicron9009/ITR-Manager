@@ -169,6 +169,37 @@ async def _get_partner_items(
                 )
             )
 
+    # SET_PROFESSIONAL_FEE — computation approved but fee not yet set
+    fee_stmt = (
+        select(ITRFiling)
+        .options(selectinload(ITRFiling.client))
+        .where(
+            ITRFiling.computation_approved_at.isnot(None),
+            ITRFiling.professional_fee.is_(None),
+            ITRFiling.no_fees_applicable == False,
+            ITRFiling.status.in_(_ACTIVE_STATES),
+        )
+    )
+    if filing_id_filter:
+        fee_stmt = fee_stmt.where(ITRFiling.id == filing_id_filter)
+
+    result = await db.execute(fee_stmt)
+    filings_needing_fee = result.scalars().unique().all()
+    for filing in filings_needing_fee:
+        client_name = filing.client.full_name if filing.client else "Client"
+        items.append(
+            ActionItemResponse(
+                type=ActionItemType.SET_PROFESSIONAL_FEE,
+                title="Set professional fee",
+                description=f"Computation approved for {client_name} FY {filing.financial_year} — professional fee needs to be set",
+                priority=ActionItemPriority.HIGH,
+                related_filing_id=filing.id,
+                related_client_id=filing.client_id,
+                financial_year=filing.financial_year,
+                action_url=f"/filings/{filing.id}",
+            )
+        )
+
     # PARTNER_APPROVE_COMPLETED_DOCS — completed docs awaiting partner approval
     stmt = (
         select(ITRFiling)

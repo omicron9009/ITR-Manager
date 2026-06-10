@@ -3,11 +3,12 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Column, Date, DateTime, Enum as SAEnum, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+from app.enums import ReferralSource
 
 
 class ClientProfile(Base):
@@ -24,6 +25,9 @@ class ClientProfile(Base):
     bank_account_details = Column(Text, nullable=True)
     professional_fee = Column(Numeric(10, 2), nullable=True)
     no_fees_applicable = Column(Boolean, nullable=False, server_default="false", default=False)
+    referral_source = Column(SAEnum(ReferralSource, name="referral_source"), nullable=True)
+    referral_source_other = Column(Text, nullable=True)
+    partner_tag_id = Column(UUID(as_uuid=True), ForeignKey("tags.id", ondelete="SET NULL"), nullable=True)
     form_data = Column(JSONB, nullable=False, default=dict)
     form_submitted_at = Column(DateTime(timezone=True), nullable=True)
     declaration_accepted_at = Column(DateTime(timezone=True), nullable=True)

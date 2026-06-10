@@ -31,6 +31,7 @@ class TagResponse(BaseModel):
     is_active: bool
     created_at: datetime
     executive_count: int = 0
+    client_count: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -128,4 +129,41 @@ class LocationDetailResponse(BaseModel):
     completed_filings: int = 0
     halted_filings: int = 0
     executives: list[ExecutiveBrief] = []
+    recent_filings: list[FilingBriefItem] = []
+
+
+# ─── Partner Tag Summary / Analytics ────────────────────────
+
+class PartnerTagSummaryItem(BaseModel):
+    tag_id: UUID
+    tag_name: str
+    client_count: int = 0
+    total_filings: int = 0
+    active_filings: int = 0
+    completed_filings: int = 0
+    halted_filings: int = 0
+
+
+class PartnerTagSummaryResponse(BaseModel):
+    items: list[PartnerTagSummaryItem]
+    total: int
+
+
+class ClientBriefItem(BaseModel):
+    client_id: UUID
+    client_name: str
+    account_status: str
+    active_filing_year: Optional[str] = None
+    filing_status: Optional[str] = None
+
+
+class PartnerTagDetailResponse(BaseModel):
+    tag_id: UUID
+    tag_name: str
+    client_count: int = 0
+    total_filings: int = 0
+    active_filings: int = 0
+    completed_filings: int = 0
+    halted_filings: int = 0
+    clients: list[ClientBriefItem] = []
     recent_filings: list[FilingBriefItem] = []

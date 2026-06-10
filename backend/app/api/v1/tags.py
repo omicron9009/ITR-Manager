@@ -19,6 +19,9 @@ from app.schemas.tag import (
     LocationDetailResponse,
     LocationSummaryItem,
     LocationSummaryResponse,
+    PartnerTagDetailResponse,
+    PartnerTagSummaryItem,
+    PartnerTagSummaryResponse,
     TagBrief,
     TagCreateRequest,
     TagListResponse,
@@ -34,6 +37,9 @@ from app.services.tag_service import (
     get_executive_tags,
     get_location_detail,
     get_location_summary,
+    get_partner_tag_detail,
+    get_partner_tag_summary,
+    get_tag_client_count,
     get_tag_executive_count,
     list_tags,
     remove_tag_from_executive,
@@ -65,6 +71,7 @@ async def create_new_tag(
     from app.core.cache import NS, bump_version
     await bump_version(NS.TAGS)
     exec_count = await get_tag_executive_count(db, tag.id)
+    client_count = await get_tag_client_count(db, tag.id)
     return TagResponse(
         id=tag.id,
         name=tag.name,
@@ -73,6 +80,7 @@ async def create_new_tag(
         is_active=tag.is_active,
         created_at=tag.created_at,
         executive_count=exec_count,
+        client_count=client_count,
     )
 
 
@@ -91,6 +99,7 @@ async def list_all_tags(
         items = []
         for tag in tags:
             exec_count = await get_tag_executive_count(db, tag.id)
+            client_count = await get_tag_client_count(db, tag.id)
             items.append(
                 TagResponse(
                     id=tag.id,
@@ -100,6 +109,7 @@ async def list_all_tags(
                     is_active=tag.is_active,
                     created_at=tag.created_at,
                     executive_count=exec_count,
+                    client_count=client_count,
                 )
             )
         return TagListResponse(items=items, total=len(items))
@@ -130,6 +140,7 @@ async def update_existing_tag(
     from app.core.cache import NS, bump_version
     await bump_version(NS.TAGS)
     exec_count = await get_tag_executive_count(db, tag.id)
+    client_count = await get_tag_client_count(db, tag.id)
     return TagResponse(
         id=tag.id,
         name=tag.name,
@@ -138,6 +149,7 @@ async def update_existing_tag(
         is_active=tag.is_active,
         created_at=tag.created_at,
         executive_count=exec_count,
+        client_count=client_count,
     )
 
 
@@ -329,3 +341,25 @@ async def location_detail(
     """Detailed view for one location: executives, filings. Partner only."""
     data = await get_location_detail(db, tag_id)
     return LocationDetailResponse(**data)
+
+
+@router.get("/summary/partner", response_model=PartnerTagSummaryResponse)
+async def partner_tag_summary(
+    current_user: User = Depends(get_current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-partner-tag summary: client count, filing stats. Partner only."""
+    data = await get_partner_tag_summary(db)
+    items = [PartnerTagSummaryItem(**item) for item in data]
+    return PartnerTagSummaryResponse(items=items, total=len(items))
+
+
+@router.get("/summary/partner/{tag_id}", response_model=PartnerTagDetailResponse)
+async def partner_tag_detail(
+    tag_id: UUID,
+    current_user: User = Depends(get_current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Detailed view for one partner tag: clients, filings. Partner only."""
+    data = await get_partner_tag_detail(db, tag_id)
+    return PartnerTagDetailResponse(**data)

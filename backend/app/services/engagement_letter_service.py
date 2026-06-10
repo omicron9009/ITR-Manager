@@ -3,15 +3,46 @@
 import io
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 
 from fpdf import FPDF
 
 from app.config import settings
+from app.models.client_income_heads import ClientIncomeHeads
 from app.services.storage_service import _get_client, build_client_dir, ensure_bucket_exists
 
 
 FIRM_NAME = "P G Joshi and Co LLP"
+
+# Mapping from ClientIncomeHeads boolean fields to income head display names
+INCOME_HEAD_MAPPING = [
+    (["salary", "esop"], "Salary"),
+    (["rental_income", "more_than_2_properties"], "House Property"),
+    (["capital_gain_shares", "capital_gain_land"], "Capital Gains"),
+    (["business_profession"], "Profits and Gains from Business and Profession"),
+    (["interest_dividend", "foreign_assets", "any_other"], "Other Sources"),
+]
+
+ALL_INCOME_HEADS = [
+    "Salary",
+    "House Property",
+    "Capital Gains",
+    "Profits and Gains from Business and Profession",
+    "Other Sources",
+]
+
+
+def get_selected_income_heads(income_heads: Optional["ClientIncomeHeads"]) -> list[str]:
+    """Derive the list of income head labels from the client's boolean flags."""
+    if income_heads is None:
+        return ALL_INCOME_HEADS
+
+    selected: list[str] = []
+    for fields, label in INCOME_HEAD_MAPPING:
+        if any(getattr(income_heads, f, False) for f in fields):
+            selected.append(label)
+
+    return selected if selected else ALL_INCOME_HEADS
 
 ENGAGEMENT_LETTER_BODY = """This Engagement Letter sets out the terms and conditions governing the professional services to be provided by {firm_name} ("the Firm") to the Client for Income Tax Return ("ITR") filing and related tax compliance services.
 
@@ -20,11 +51,7 @@ ENGAGEMENT_LETTER_BODY = """This Engagement Letter sets out the terms and condit
 The Firm shall provide professional services including:
 
 - Preparation and filing of Income Tax Return(s) for income under the heads:
-  1. Salary
-  2. House property
-  3. Capital Gains
-  4. Profits and Gains from Business and Profession
-  5. Other Sources
+{income_heads_list}
 - Computation of taxable income and tax liability based on information provided by the Client;
 - Assistance in tax filing compliance and related procedural matters;
 - Basic clarification and communication relating to the filed return;
@@ -89,6 +116,18 @@ NO_FEE_SECTIONS_TEMPLATE = """5. Professional Fees
 
 No professional fees are applicable for this engagement."""
 
+MUTUALLY_DECIDED_FEE_TEMPLATE = """5. Professional Fees
+
+Professional fees shall be mutually decided depending upon the scope, volume and complexity of work.
+
+Any additional work outside the agreed scope including notices, scrutiny matters, rectifications, appeals, or advisory services may be charged separately based on the nature and extent of work involved.
+
+6. Payment Terms
+
+Fees shall be payable upon communication of the agreed fee and/or prior to filing of the return unless otherwise agreed.
+
+The Firm reserves the right to withhold filing, submission, or delivery of services in case of non-payment of fees."""
+
 
 def generate_engagement_letter_pdf(
     client_name: str,
@@ -96,6 +135,7 @@ def generate_engagement_letter_pdf(
     professional_fee: Optional[Decimal],
     accepted_at: datetime,
     no_fees_applicable: bool = False,
+    income_heads: Optional[List[str]] = None,
 ) -> bytes:
     """Generate the engagement letter PDF with client details and fee filled in."""
     pdf = FPDF()
@@ -112,20 +152,31 @@ def generate_engagement_letter_pdf(
     pdf.cell(0, 7, f"Financial Year: {financial_year}", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.ln(6)
 
-    # Build fee sections based on no_fees_applicable flag
+    # Build fee sections based on no_fees_applicable flag and fee availability
     if no_fees_applicable:
         fee_sections = NO_FEE_SECTIONS_TEMPLATE
         acceptance_section_number = "6"
+    elif professional_fee is None:
+        # Fee not yet decided — use "mutually decided" language
+        fee_sections = MUTUALLY_DECIDED_FEE_TEMPLATE
+        acceptance_section_number = "7"
     else:
         fee_str = f"Rs. {professional_fee:,.2f} plus applicable taxes, if any."
         fee_sections = FEE_SECTIONS_TEMPLATE.format(fee_line=fee_str)
         acceptance_section_number = "7"
+
+    # Build income heads numbered list
+    heads_list = income_heads if income_heads else ALL_INCOME_HEADS
+    income_heads_formatted = "\n".join(
+        f"  {i}. {head}" for i, head in enumerate(heads_list, 1)
+    )
 
     # Body
     body = ENGAGEMENT_LETTER_BODY.format(
         firm_name=FIRM_NAME,
         fee_sections=fee_sections,
         acceptance_section_number=acceptance_section_number,
+        income_heads_list=income_heads_formatted,
     )
 
     pdf.set_font("Helvetica", "", 10)

@@ -200,11 +200,12 @@ async def confirm_computation_upload(
         )
         mgr_assignment = mgr_assignment_result.scalar_one_or_none()
         if mgr_assignment:
+            _client_label = client_user.full_name if client_user else 'Unknown'
             await create_notification(
                 db=db,
                 user_id=mgr_assignment.manager_id,
-                title="Computation Uploaded — Review Required",
-                message=f"A computation (v{version}) has been uploaded by {current_user.full_name} for client {client_user.full_name if client_user else 'Unknown'}, FY {filing.financial_year}. Please review and approve or reject.",
+                title=f"{_client_label} — Computation Uploaded — Review Required",
+                message=f"A computation (v{version}) has been uploaded by {current_user.full_name} for client {_client_label}, FY {filing.financial_year}. Please review and approve or reject.",
                 related_filing_id=filing_id,
                 client_name=client_user.full_name if client_user else None,
                 financial_year=filing.financial_year,
@@ -221,11 +222,12 @@ async def confirm_computation_upload(
         )
         partner = partner_result.scalars().first()
         if partner:
+            _client_label = client_user.full_name if client_user else 'Unknown'
             await create_notification(
                 db=db,
                 user_id=partner.id,
-                title="Computation Uploaded — Review Required",
-                message=f"A computation (v{version}) has been uploaded by Manager {current_user.full_name} for client {client_user.full_name if client_user else 'Unknown'}, FY {filing.financial_year}. Please review and approve.",
+                title=f"{_client_label} — Computation Uploaded — Review Required",
+                message=f"A computation (v{version}) has been uploaded by Manager {current_user.full_name} for client {_client_label}, FY {filing.financial_year}. Please review and approve.",
                 related_filing_id=filing_id,
                 client_name=client_user.full_name if client_user else None,
                 financial_year=filing.financial_year,
@@ -434,7 +436,7 @@ async def approve_computation(
             await create_notification(
                 db=db,
                 user_id=filing.assigned_executive_id,
-                title="Tax Payment Confirmed — Filing Advanced",
+                title=f"{current_user.full_name} — Tax Payment Confirmed — Filing Advanced",
                 message=f"Tax payment has been confirmed by {current_user.full_name} for FY {filing.financial_year}. Filing has automatically advanced to FILING state. Please upload the required filed documents.",
                 related_filing_id=filing.id,
                 related_client_id=current_user.id,
@@ -545,11 +547,34 @@ async def approve_computation(
         cta_label="View Filing",
     )
 
+    # If professional fee is not yet set, send a dedicated notification to Partner
+    if not filing.professional_fee and not filing.no_fees_applicable:
+        from app.models.user import User as UserModel
+        partner_result = await db.execute(
+            select(UserModel).where(UserModel.role == UserRole.PARTNER, UserModel.is_active == True).limit(1)
+        )
+        partner_user = partner_result.scalar_one_or_none()
+        if partner_user:
+            await create_notification(
+                db=db,
+                user_id=partner_user.id,
+                title=f"{current_user.full_name} — Set Professional Fee",
+                message=f"Computation approved by {current_user.full_name} for FY {filing.financial_year}. "
+                        f"Professional fee has not been set yet. Please set the fee to generate the revised engagement letter.",
+                related_filing_id=filing.id,
+                related_client_id=current_user.id,
+                client_name=current_user.full_name,
+                financial_year=filing.financial_year,
+                action_by=current_user.full_name,
+                action_url_path=f"/filings/{filing.id}",
+                cta_label="Set Fee",
+            )
+
     if filing.assigned_executive_id:
         await create_notification(
             db=db,
             user_id=filing.assigned_executive_id,
-            title=notif_title,
+            title=f"{current_user.full_name} — {notif_title}",
             message=notif_message,
             related_filing_id=filing.id,
             related_client_id=current_user.id,
@@ -650,7 +675,7 @@ async def reject_computation(
         await create_notification(
             db=db,
             user_id=filing.assigned_executive_id,
-            title="Computation Rejected by Client",
+            title=f"{current_user.full_name} — Computation Rejected by Client",
             message=f"Computation (v{computation.version}) has been rejected by {current_user.full_name} for FY {filing.financial_year}. Please upload a revised computation.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
@@ -721,10 +746,13 @@ async def manager_approve_computation(
     )
     partner = partner_result.scalars().first()
     if partner:
+        # Fetch client name for notification title
+        _client_result = await db.execute(select(User.full_name).where(User.id == filing.client_id))
+        _client_name = _client_result.scalar() or "Client"
         await create_notification(
             db=db,
             user_id=partner.id,
-            title="Computation Manager-Approved — Partner Review Needed",
+            title=f"{_client_name} — Computation Manager-Approved — Partner Review Needed",
             message=f"Computation (v{computation.version}) has been approved by Manager {current_user.full_name} for FY {filing.financial_year}. Please review and approve to send to client.",
             related_filing_id=filing.id,
             related_client_id=filing.client_id,
@@ -788,11 +816,15 @@ async def manager_reject_computation(
     )
 
     # Notify the executive who uploaded
+    # Fetch client name for notification titles
+    _client_result = await db.execute(select(User.full_name).where(User.id == filing.client_id))
+    _client_name = _client_result.scalar() or "Client"
+
     if computation.uploaded_by:
         await create_notification(
             db=db,
             user_id=computation.uploaded_by,
-            title="Computation Rejected by Manager",
+            title=f"{_client_name} — Computation Rejected by Manager",
             message=f"Computation (v{computation.version}) for FY {filing.financial_year} has been rejected by Manager {current_user.full_name}. Please review the feedback and upload a revised version.",
             related_filing_id=filing.id,
             related_client_id=filing.client_id,
@@ -812,7 +844,7 @@ async def manager_reject_computation(
         await create_notification(
             db=db,
             user_id=partner.id,
-            title="Computation Rejected by Manager",
+            title=f"{_client_name} — Computation Rejected by Manager",
             message=f"Computation (v{computation.version}) for FY {filing.financial_year} has been rejected by Manager {current_user.full_name}. Executive will upload a revised version.",
             related_filing_id=filing.id,
             related_client_id=filing.client_id,
@@ -945,11 +977,15 @@ async def partner_reject_computation(
     )
 
     # Notify the executive who uploaded
+    # Fetch client name for notification titles
+    _client_result = await db.execute(select(User.full_name).where(User.id == filing.client_id))
+    _client_name = _client_result.scalar() or "Client"
+
     if computation.uploaded_by:
         await create_notification(
             db=db,
             user_id=computation.uploaded_by,
-            title="Computation Rejected by Partner",
+            title=f"{_client_name} — Computation Rejected by Partner",
             message=f"Computation (v{computation.version}) for FY {filing.financial_year} has been rejected by Partner. Please review the feedback and upload a revised computation.",
             related_filing_id=filing.id,
             related_client_id=filing.client_id,
@@ -973,7 +1009,7 @@ async def partner_reject_computation(
             await create_notification(
                 db=db,
                 user_id=mgr_row[0],
-                title="Computation Rejected by Partner",
+                title=f"{_client_name} — Computation Rejected by Partner",
                 message=f"Computation (v{computation.version}) for FY {filing.financial_year} has been rejected by Partner. Executive needs to upload a revised version.",
                 related_filing_id=filing.id,
                 related_client_id=filing.client_id,
