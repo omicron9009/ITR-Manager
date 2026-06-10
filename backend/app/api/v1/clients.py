@@ -58,6 +58,8 @@ async def register_new_client(
             "foreign_assets": request_data.foreign_assets,
             "any_other": request_data.any_other,
         },
+        referral_source=request_data.referral_source,
+        referral_source_other=request_data.referral_source_other,
     )
     return ClientRegistrationResponse(
         id=user.id,
@@ -435,6 +437,8 @@ async def get_client_profile(
         assigned_executive_id=exec_id,
         assigned_executive_name=exec_name,
         income_heads=income_heads_data,
+        referral_source=profile.referral_source,
+        referral_source_other=profile.referral_source_other,
         professional_fee=profile.professional_fee,
         created_at=profile.created_at,
         updated_at=profile.updated_at,

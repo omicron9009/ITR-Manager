@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 # ─── User Base ──────────────────────────────────────────────
@@ -102,6 +102,10 @@ class ClientRegistrationRequest(BaseModel):
     foreign_assets: bool = Field(False)
     any_other: bool = Field(False)
 
+    # Referral source
+    referral_source: str = Field(..., description="How did you hear about us? One of: WEBSITE, FRIEND_RELATIVE, PROFESSIONAL_REFERRAL, DIRECTED_BY_FIRM, OTHER")
+    referral_source_other: Optional[str] = Field(None, max_length=255, description="Required if referral_source is OTHER")
+
     @field_validator("declaration_accepted")
     @classmethod
     def validate_declaration_accepted(cls, v: bool) -> bool:
@@ -117,6 +121,20 @@ class ClientRegistrationRequest(BaseModel):
             if not digits.isdigit() or len(digits) != 10:
                 raise ValueError("Phone number must be exactly 10 digits")
         return v
+
+    @field_validator("referral_source")
+    @classmethod
+    def validate_referral_source(cls, v: str) -> str:
+        allowed = {"WEBSITE", "FRIEND_RELATIVE", "PROFESSIONAL_REFERRAL", "DIRECTED_BY_FIRM", "OTHER"}
+        if v not in allowed:
+            raise ValueError(f"referral_source must be one of: {', '.join(sorted(allowed))}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_referral_other(self):
+        if self.referral_source == "OTHER" and not self.referral_source_other:
+            raise ValueError("referral_source_other is required when referral_source is OTHER")
+        return self
 
 
 class ClientRegistrationResponse(BaseModel):
@@ -205,6 +223,8 @@ class ClientProfileResponse(BaseModel):
     assigned_executive_id: Optional[UUID] = None
     assigned_executive_name: Optional[str] = None
     income_heads: Optional[IncomeHeadsResponse] = None
+    referral_source: Optional[str] = None
+    referral_source_other: Optional[str] = None
     professional_fee: Optional[Decimal] = None
     no_fees_applicable: bool = False
     created_at: datetime

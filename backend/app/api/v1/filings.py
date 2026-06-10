@@ -73,7 +73,15 @@ async def initiate_filing(
 
     # Generate engagement letter PDF and upload to MinIO
     from datetime import datetime
-    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter
+    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter, get_selected_income_heads
+
+    # Fetch client income heads for dynamic engagement letter
+    from app.models.client_income_heads import ClientIncomeHeads
+    heads_result = await db.execute(
+        select(ClientIncomeHeads).where(ClientIncomeHeads.user_id == current_user.id)
+    )
+    client_income_heads = heads_result.scalar_one_or_none()
+    selected_heads = get_selected_income_heads(client_income_heads)
 
     now = datetime.utcnow()
     pdf_bytes = generate_engagement_letter_pdf(
@@ -82,6 +90,7 @@ async def initiate_filing(
         professional_fee=profile.professional_fee,
         accepted_at=now,
         no_fees_applicable=is_no_fees,
+        income_heads=selected_heads,
     )
     engagement_key = upload_engagement_letter(
         client_id=str(current_user.id),
@@ -326,7 +335,7 @@ async def approve_fee_change(
     """Client approves a proposed fee change. Updates fee and regenerates engagement letter."""
     from decimal import Decimal
     from datetime import datetime
-    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter
+    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter, get_selected_income_heads
 
     result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = result.scalar_one_or_none()
@@ -354,6 +363,14 @@ async def approve_fee_change(
     if profile:
         profile.professional_fee = filing.professional_fee
 
+    # Fetch client income heads for dynamic engagement letter
+    from app.models.client_income_heads import ClientIncomeHeads
+    heads_result = await db.execute(
+        select(ClientIncomeHeads).where(ClientIncomeHeads.user_id == current_user.id)
+    )
+    client_income_heads = heads_result.scalar_one_or_none()
+    selected_heads = get_selected_income_heads(client_income_heads)
+
     # Regenerate engagement letter PDF with updated fee
     accepted_at = filing.engagement_accepted_at or datetime.utcnow()
     pdf_bytes = generate_engagement_letter_pdf(
@@ -361,6 +378,7 @@ async def approve_fee_change(
         financial_year=filing.financial_year,
         professional_fee=filing.professional_fee,
         accepted_at=accepted_at,
+        income_heads=selected_heads,
     )
     engagement_key = upload_engagement_letter(
         client_id=str(current_user.id),

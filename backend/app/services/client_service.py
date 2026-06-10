@@ -24,6 +24,8 @@ async def register_client(
     password_hash: str,
     phone_number: Optional[str] = None,
     income_heads: Optional[dict] = None,
+    referral_source: Optional[str] = None,
+    referral_source_other: Optional[str] = None,
 ) -> User:
     """Register a new client. Account starts in PENDING_VERIFICATION."""
     # Check if email already exists
@@ -48,7 +50,12 @@ async def register_client(
 
     # Create empty client profile with declaration timestamp
     now = datetime.utcnow()
-    profile = ClientProfile(user_id=user.id, declaration_accepted_at=now)
+    profile = ClientProfile(
+        user_id=user.id,
+        declaration_accepted_at=now,
+        referral_source=referral_source,
+        referral_source_other=referral_source_other,
+    )
     db.add(profile)
 
     # Store income heads

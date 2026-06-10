@@ -246,7 +246,7 @@ async def _sync_pg_enums():
     from app.enums import (
         AccountStatus, FilingStatus, DocumentStatus, ComputationStatus,
         CompletedDocType, CompletedDocStatus, FormFieldType, AuditEventType, NotificationChannel, UserRole,
-        TagType,
+        TagType, ReferralSource,
     )
     enum_map = {
         "user_role": UserRole,
@@ -260,6 +260,7 @@ async def _sync_pg_enums():
         "audit_event_type": AuditEventType,
         "notification_channel": NotificationChannel,
         "tag_type": TagType,
+        "referral_source": ReferralSource,
     }
 
     try:
@@ -351,6 +352,9 @@ async def _sync_new_columns():
         # No fees applicable flag
         ("client_profiles", "no_fees_applicable", "BOOLEAN NOT NULL", "'false'"),
         ("itr_filings", "no_fees_applicable", "BOOLEAN NOT NULL", "'false'"),
+        # Referral source
+        ("client_profiles", "referral_source", "VARCHAR(50)", None),
+        ("client_profiles", "referral_source_other", "TEXT", None),
     ]
 
     try:

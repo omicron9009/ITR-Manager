@@ -121,6 +121,14 @@ class TagType(str, enum.Enum):
     LOCATION = "LOCATION"
 
 
+class ReferralSource(str, enum.Enum):
+    WEBSITE = "WEBSITE"
+    FRIEND_RELATIVE = "FRIEND_RELATIVE"
+    PROFESSIONAL_REFERRAL = "PROFESSIONAL_REFERRAL"
+    DIRECTED_BY_FIRM = "DIRECTED_BY_FIRM"
+    OTHER = "OTHER"
+
+
 class ActionItemType(str, enum.Enum):
     # Partner / Executive items
     VERIFY_CLIENT = "VERIFY_CLIENT"
