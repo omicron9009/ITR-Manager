@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -23,6 +23,7 @@ class ClientProfile(Base):
     income_type = Column(String(50), nullable=True)
     bank_account_details = Column(Text, nullable=True)
     professional_fee = Column(Numeric(10, 2), nullable=True)
+    no_fees_applicable = Column(Boolean, nullable=False, server_default="false", default=False)
     form_data = Column(JSONB, nullable=False, default=dict)
     form_submitted_at = Column(DateTime(timezone=True), nullable=True)
     declaration_accepted_at = Column(DateTime(timezone=True), nullable=True)

@@ -82,6 +82,7 @@ async def activate_client_account(
         activated_by=current_user.id,
         ip_address=request.client.host if request.client else None,
         professional_fee=body.professional_fee,
+        no_fees_applicable=body.no_fees_applicable,
     )
     return {"message": f"Client {client.full_name} has been activated", "client_id": str(client.id)}
 
@@ -131,6 +132,9 @@ async def set_client_fee(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client profile not found")
 
     profile.professional_fee = Decimal(str(fee))
+    # Setting a fee implicitly clears no_fees_applicable
+    if profile.no_fees_applicable:
+        profile.no_fees_applicable = False
     await db.flush()
 
     # Notify client that fee is set and they can proceed with filing
@@ -144,6 +148,43 @@ async def set_client_fee(
 
     await db.commit()
     return {"message": f"Professional fee set to ₹{fee:.2f} for {client.full_name}", "client_id": str(client_id)}
+
+
+# ─── POST /clients/{client_id}/toggle-no-fees ───────────────
+@router.post("/{client_id}/toggle-no-fees", response_model=dict)
+async def toggle_no_fees(
+    client_id: UUID,
+    no_fees: bool = Query(..., description="Set to true to mark client as no-fees-applicable"),
+    current_user: User = Depends(get_current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle no_fees_applicable for a client. Partner only."""
+    from fastapi import HTTPException, status
+
+    result = await db.execute(select(User).where(User.id == client_id, User.role == UserRole.CLIENT))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+
+    profile_result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == client_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client profile not found")
+
+    profile.no_fees_applicable = no_fees
+    if no_fees:
+        profile.professional_fee = None  # Clear fee when no fees applicable
+
+    await db.commit()
+
+    status_label = "No Fees Applicable" if no_fees else "Fees Applicable"
+    return {
+        "message": f"Client {client.full_name} marked as '{status_label}'",
+        "client_id": str(client_id),
+        "no_fees_applicable": no_fees,
+    }
 
 
 # ─── GET /clients ───────────────────────────────────────────

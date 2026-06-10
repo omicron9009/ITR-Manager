@@ -63,7 +63,9 @@ async def initiate_filing(
         raise OnboardingFormNotSubmittedError()
 
     # Ensure professional fee has been set by Partner before client can file
-    if not profile.professional_fee:
+    # (skip check if client is marked as no_fees_applicable)
+    is_no_fees = profile.no_fees_applicable
+    if not is_no_fees and not profile.professional_fee:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Professional fee has not been set by the firm. Please contact support.",
@@ -79,6 +81,7 @@ async def initiate_filing(
         financial_year=body.financial_year,
         professional_fee=profile.professional_fee,
         accepted_at=now,
+        no_fees_applicable=is_no_fees,
     )
     engagement_key = upload_engagement_letter(
         client_id=str(current_user.id),
@@ -94,6 +97,7 @@ async def initiate_filing(
         status=FilingStatus.INITIATED,
         created_by=current_user.id,
         professional_fee=profile.professional_fee,
+        no_fees_applicable=is_no_fees,
         engagement_accepted_at=now,
         engagement_letter_key=engagement_key,
     )
@@ -194,6 +198,7 @@ async def initiate_filing(
         is_tax_paid=filing.is_tax_paid,
         tax_paid_at=filing.tax_paid_at,
         professional_fee=filing.professional_fee,
+        no_fees_applicable=filing.no_fees_applicable,
         engagement_accepted_at=filing.engagement_accepted_at,
         created_at=filing.created_at,
         updated_at=filing.updated_at,
@@ -908,6 +913,10 @@ async def mark_payment_received(
 
     await enforce_filing_access(db, current_user, filing.client_id)
 
+    # If filing is already COMPLETED (e.g. no-fee auto-completed), return gracefully
+    if filing.status == FilingStatus.COMPLETED:
+        return {"message": "Filing is already completed.", "status": filing.status.value}
+
     # Must be in PAYMENT state
     if filing.status != FilingStatus.PAYMENT:
         raise HTTPException(
@@ -920,7 +929,11 @@ async def mark_payment_received(
     from app.enums import CompletedDocType
     from app.models.filing_completed_doc import FilingCompletedDoc
 
-    required_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM}
+    # For no-fee clients, INVOICE is not required
+    if filing.no_fees_applicable:
+        required_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM}
+    else:
+        required_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM}
     existing_result = await db.execute(
         select(FilingCompletedDoc.doc_type).where(FilingCompletedDoc.filing_id == filing_id)
     )

@@ -133,6 +133,7 @@ class ClientRegistrationResponse(BaseModel):
 class ClientActivationRequest(BaseModel):
     client_id: UUID
     professional_fee: Optional[Decimal] = Field(None, gt=0, description="Professional fee in rupees (set by Partner)")
+    no_fees_applicable: bool = Field(False, description="If true, no professional fees will be charged to this client")
 
 
 class ClientRejectionRequest(BaseModel):
@@ -205,6 +206,7 @@ class ClientProfileResponse(BaseModel):
     assigned_executive_name: Optional[str] = None
     income_heads: Optional[IncomeHeadsResponse] = None
     professional_fee: Optional[Decimal] = None
+    no_fees_applicable: bool = False
     created_at: datetime
     updated_at: datetime
 

@@ -105,6 +105,7 @@ async def activate_client(
     activated_by: UUID,
     ip_address: Optional[str] = None,
     professional_fee=None,
+    no_fees_applicable: bool = False,
 ) -> User:
     """Activate a client account (Partner action)."""
     from fastapi import HTTPException, status as http_status
@@ -127,14 +128,18 @@ async def activate_client(
     client.activated_at = datetime.utcnow()
     client.activated_by = activated_by
 
-    # Store professional fee on profile if provided
-    if professional_fee is not None:
+    # Store professional fee and no_fees_applicable on profile if provided
+    if professional_fee is not None or no_fees_applicable:
         profile_result = await db.execute(
             select(ClientProfile).where(ClientProfile.user_id == client_id)
         )
         profile = profile_result.scalar_one_or_none()
         if profile:
-            profile.professional_fee = professional_fee
+            if no_fees_applicable:
+                profile.no_fees_applicable = True
+                profile.professional_fee = None  # Clear fee when no fees applicable
+            elif professional_fee is not None:
+                profile.professional_fee = professional_fee
 
     await record_audit_event(
         db=db,
@@ -153,8 +158,8 @@ async def activate_client(
         cta_label="Complete Onboarding",
     )
 
-    # Notify Partner if fee not set
-    if professional_fee is None:
+    # Notify Partner if fee not set (and no_fees_applicable is not set)
+    if professional_fee is None and not no_fees_applicable:
         partner = await _get_partner(db)
         if partner:
             await create_notification(

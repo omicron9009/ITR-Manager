@@ -35,6 +35,7 @@ class ITRFiling(Base):
 
     # Engagement letter
     professional_fee = Column(Numeric(10, 2), nullable=True)
+    no_fees_applicable = Column(Boolean, nullable=False, server_default="false", default=False)
     engagement_accepted_at = Column(DateTime(timezone=True), nullable=True)
     engagement_letter_key = Column(Text, nullable=True)
 

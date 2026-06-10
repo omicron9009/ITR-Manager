@@ -61,7 +61,17 @@ The Firm shall exercise reasonable professional care in providing the services. 
 - The Firm shall not be liable for delays or failures caused by technical issues, portal downtime, governmental systems, third-party intermediaries, cyber incidents, or events beyond reasonable control;
 - No assurance is provided regarding selection of return for scrutiny, assessment, or verification proceedings by tax authorities.
 
-5. Professional Fees
+{fee_sections}
+
+{acceptance_section_number}. Acceptance & Consent
+
+By proceeding with the engagement, submitting information/documents through the platform, or accepting these terms electronically, the Client:
+
+- confirms that the information provided is true and complete to the best of their knowledge;
+- consents to the collection, storage, and processing of information for the purpose of providing the agreed services; and
+- agrees to the terms contained in this Engagement Letter."""
+
+FEE_SECTIONS_TEMPLATE = """5. Professional Fees
 
 The professional fee for the above services shall be:
 
@@ -73,22 +83,19 @@ Any additional work outside the agreed scope including notices, scrutiny matters
 
 Fees shall be payable upon acceptance of this Engagement Letter and/or prior to filing of the return unless otherwise agreed.
 
-The Firm reserves the right to withhold filing, submission, or delivery of services in case of non-payment of fees.
+The Firm reserves the right to withhold filing, submission, or delivery of services in case of non-payment of fees."""
 
-7. Acceptance & Consent
+NO_FEE_SECTIONS_TEMPLATE = """5. Professional Fees
 
-By proceeding with the engagement, submitting information/documents through the platform, or accepting these terms electronically, the Client:
-
-- confirms that the information provided is true and complete to the best of their knowledge;
-- consents to the collection, storage, and processing of information for the purpose of providing the agreed services; and
-- agrees to the terms contained in this Engagement Letter."""
+No professional fees are applicable for this engagement."""
 
 
 def generate_engagement_letter_pdf(
     client_name: str,
     financial_year: str,
-    professional_fee: Decimal,
+    professional_fee: Optional[Decimal],
     accepted_at: datetime,
+    no_fees_applicable: bool = False,
 ) -> bytes:
     """Generate the engagement letter PDF with client details and fee filled in."""
     pdf = FPDF()
@@ -105,13 +112,20 @@ def generate_engagement_letter_pdf(
     pdf.cell(0, 7, f"Financial Year: {financial_year}", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.ln(6)
 
-    # Build fee line (use "Rs." instead of ₹ since core PDF fonts don't support Unicode)
-    fee_str = f"Rs. {professional_fee:,.2f} plus applicable taxes, if any."
+    # Build fee sections based on no_fees_applicable flag
+    if no_fees_applicable:
+        fee_sections = NO_FEE_SECTIONS_TEMPLATE
+        acceptance_section_number = "6"
+    else:
+        fee_str = f"Rs. {professional_fee:,.2f} plus applicable taxes, if any."
+        fee_sections = FEE_SECTIONS_TEMPLATE.format(fee_line=fee_str)
+        acceptance_section_number = "7"
 
     # Body
     body = ENGAGEMENT_LETTER_BODY.format(
         firm_name=FIRM_NAME,
-        fee_line=fee_str,
+        fee_sections=fee_sections,
+        acceptance_section_number=acceptance_section_number,
     )
 
     pdf.set_font("Helvetica", "", 10)
