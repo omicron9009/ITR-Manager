@@ -27,6 +27,7 @@ class ClientProfile(Base):
     no_fees_applicable = Column(Boolean, nullable=False, server_default="false", default=False)
     referral_source = Column(SAEnum(ReferralSource, name="referral_source"), nullable=True)
     referral_source_other = Column(Text, nullable=True)
+    partner_tag_id = Column(UUID(as_uuid=True), ForeignKey("tags.id", ondelete="SET NULL"), nullable=True)
     form_data = Column(JSONB, nullable=False, default=dict)
     form_submitted_at = Column(DateTime(timezone=True), nullable=True)
     declaration_accepted_at = Column(DateTime(timezone=True), nullable=True)

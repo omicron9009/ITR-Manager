@@ -189,6 +189,90 @@ async def toggle_no_fees(
     }
 
 
+# ─── POST /clients/{client_id}/set-partner-tag ──────────────
+@router.post("/{client_id}/set-partner-tag", response_model=dict)
+async def set_client_partner_tag(
+    client_id: UUID,
+    tag_id: UUID = Query(..., description="Partner tag ID to assign"),
+    current_user: User = Depends(get_current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Assign or change the partner tag for a client. Partner only."""
+    from fastapi import HTTPException, status
+    from app.models.tag import Tag
+    from app.enums import TagType
+
+    result = await db.execute(select(User).where(User.id == client_id, User.role == UserRole.CLIENT))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+
+    # Verify tag exists, is active, and is of type PARTNER
+    tag_result = await db.execute(
+        select(Tag).where(Tag.id == tag_id, Tag.is_active == True, Tag.tag_type == TagType.PARTNER)
+    )
+    tag = tag_result.scalar_one_or_none()
+    if not tag:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Partner tag not found or inactive")
+
+    profile_result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == client_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client profile not found")
+
+    profile.partner_tag_id = tag_id
+    await db.commit()
+
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.CLIENT_LIST)
+
+    return {
+        "message": f"Partner tag '{tag.name}' assigned to {client.full_name}",
+        "client_id": str(client_id),
+        "partner_tag_id": str(tag_id),
+        "partner_tag_name": tag.name,
+    }
+
+
+# ─── DELETE /clients/{client_id}/partner-tag ─────────────────
+@router.delete("/{client_id}/partner-tag", response_model=dict)
+async def remove_client_partner_tag(
+    client_id: UUID,
+    current_user: User = Depends(get_current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove the partner tag from a client. Partner only."""
+    from fastapi import HTTPException, status
+
+    result = await db.execute(select(User).where(User.id == client_id, User.role == UserRole.CLIENT))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+
+    profile_result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == client_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client profile not found")
+
+    if profile.partner_tag_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Client has no partner tag assigned")
+
+    profile.partner_tag_id = None
+    await db.commit()
+
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.CLIENT_LIST)
+
+    return {
+        "message": f"Partner tag removed from {client.full_name}",
+        "client_id": str(client_id),
+    }
+
+
 # ─── GET /clients ───────────────────────────────────────────
 @router.get("", response_model=ClientListResponse)
 async def list_clients(
@@ -197,6 +281,7 @@ async def list_clients(
     search: Optional[str] = Query(None),
     account_status: Optional[AccountStatus] = Query(None),
     financial_year: Optional[str] = Query(None),
+    partner_tag_id: Optional[UUID] = Query(None, description="Filter by partner tag"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -215,7 +300,7 @@ async def list_clients(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     # Cache key encodes the full filter + user scope
-    cache_key = f"{current_user.id}:{page}:{page_size}:{search}:{account_status}:{financial_year}"
+    cache_key = f"{current_user.id}:{page}:{page_size}:{search}:{account_status}:{financial_year}:{partner_tag_id}"
     cached = await cache_get(NS.CLIENT_LIST, cache_key)
     if cached is not _MISS:
         return cached
@@ -259,6 +344,13 @@ async def list_clients(
         ).scalar_subquery()
         query = query.where(User.id.in_(fy_sub))
 
+    # Partner tag filter
+    if partner_tag_id:
+        pt_sub = select(ClientProfile.user_id).where(
+            ClientProfile.partner_tag_id == partner_tag_id
+        ).scalar_subquery()
+        query = query.where(User.id.in_(pt_sub))
+
     # Count
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -294,6 +386,26 @@ async def list_clients(
         )
         exec_name_by_id = {row[0]: row[1] for row in exec_rows.all()}
 
+    # ── Batch-fetch manager assignments (executive → manager) ──
+    from app.models.manager_executive_assignment import ManagerExecutiveAssignment
+    mgr_by_exec: dict = {}
+    if exec_ids:
+        mgr_assign_result = await db.execute(
+            select(ManagerExecutiveAssignment.executive_id, ManagerExecutiveAssignment.manager_id).where(
+                ManagerExecutiveAssignment.executive_id.in_(exec_ids),
+                ManagerExecutiveAssignment.is_active == True,
+            )
+        )
+        mgr_by_exec = {row[0]: row[1] for row in mgr_assign_result.all()}
+
+    mgr_ids = list(set(mgr_by_exec.values()))
+    mgr_name_by_id: dict = {}
+    if mgr_ids:
+        mgr_rows = await db.execute(
+            select(User.id, User.full_name).where(User.id.in_(mgr_ids))
+        )
+        mgr_name_by_id = {row[0]: row[1] for row in mgr_rows.all()}
+
     # ── Batch-fetch active filings for the page (was N+1) ──
     # ORDER BY created_at DESC ensures [0] is always the most recent filing
     filings_result = await db.execute(
@@ -306,15 +418,39 @@ async def list_clients(
     for cid, fy, st in filings_result.all():
         filings_by_client.setdefault(cid, []).append((fy, st))
 
+    # ── Batch-fetch partner tags for the page ──
+    from app.models.tag import Tag
+    profile_tag_result = await db.execute(
+        select(ClientProfile.user_id, ClientProfile.partner_tag_id).where(
+            ClientProfile.user_id.in_(user_ids),
+            ClientProfile.partner_tag_id.isnot(None),
+        )
+    )
+    partner_tag_by_client = {row[0]: row[1] for row in profile_tag_result.all()}
+    tag_ids = list(set(partner_tag_by_client.values()))
+    tag_name_by_id: dict = {}
+    if tag_ids:
+        tag_rows = await db.execute(
+            select(Tag.id, Tag.name).where(Tag.id.in_(tag_ids))
+        )
+        tag_name_by_id = {row[0]: row[1] for row in tag_rows.all()}
+
     # Build response items
     items = []
     for user in users:
         assignment = assignments_by_client.get(user.id)
         exec_name = None
         exec_id = None
+        mgr_id = None
+        mgr_name = None
         if assignment:
             exec_id = assignment.executive_id
             exec_name = exec_name_by_id.get(exec_id)
+            # Resolve manager from executive
+            _mgr_id = mgr_by_exec.get(exec_id)
+            if _mgr_id:
+                mgr_id = _mgr_id
+                mgr_name = mgr_name_by_id.get(_mgr_id)
 
         user_filings = filings_by_client.get(user.id, [])
         active_years = [f[0] for f in user_filings]
@@ -329,6 +465,10 @@ async def list_clients(
                 account_status=user.account_status.value,
                 assigned_executive_name=exec_name,
                 assigned_executive_id=exec_id,
+                assigned_manager_id=mgr_id,
+                assigned_manager_name=mgr_name,
+                partner_tag_id=partner_tag_by_client.get(user.id),
+                partner_tag_name=tag_name_by_id.get(partner_tag_by_client.get(user.id)),
                 active_filing_years=active_years,
                 current_state=current_state,
                 last_updated=user.updated_at,
@@ -403,12 +543,30 @@ async def get_client_profile(
     assignment = exec_result.scalar_one_or_none()
     exec_id = None
     exec_name = None
+    mgr_id = None
+    mgr_name = None
     if assignment:
         exec_user_result = await db.execute(select(User).where(User.id == assignment.executive_id))
         exec_user = exec_user_result.scalar_one_or_none()
         if exec_user:
             exec_id = exec_user.id
             exec_name = exec_user.full_name
+
+        # Resolve manager via executive → manager assignment chain
+        from app.models.manager_executive_assignment import ManagerExecutiveAssignment
+        mgr_assign_result = await db.execute(
+            select(ManagerExecutiveAssignment).where(
+                ManagerExecutiveAssignment.executive_id == assignment.executive_id,
+                ManagerExecutiveAssignment.is_active == True,
+            )
+        )
+        mgr_assign = mgr_assign_result.scalar_one_or_none()
+        if mgr_assign:
+            mgr_user_result = await db.execute(select(User).where(User.id == mgr_assign.manager_id))
+            mgr_user = mgr_user_result.scalar_one_or_none()
+            if mgr_user:
+                mgr_id = mgr_user.id
+                mgr_name = mgr_user.full_name
 
     from app.schemas.user import ClientProfileResponse, IncomeHeadsResponse
 
@@ -418,6 +576,13 @@ async def get_client_profile(
     )
     heads = heads_result.scalar_one_or_none()
     income_heads_data = IncomeHeadsResponse.model_validate(heads) if heads else None
+
+    # Fetch partner tag name if assigned
+    partner_tag_name = None
+    if profile.partner_tag_id:
+        from app.models.tag import Tag
+        tag_result = await db.execute(select(Tag.name).where(Tag.id == profile.partner_tag_id))
+        partner_tag_name = tag_result.scalar()
 
     return ClientProfileResponse(
         id=profile.id,
@@ -436,10 +601,14 @@ async def get_client_profile(
         form_submitted_at=profile.form_submitted_at,
         assigned_executive_id=exec_id,
         assigned_executive_name=exec_name,
+        assigned_manager_id=mgr_id,
+        assigned_manager_name=mgr_name,
         income_heads=income_heads_data,
         referral_source=profile.referral_source,
         referral_source_other=profile.referral_source_other,
         professional_fee=profile.professional_fee,
+        partner_tag_id=profile.partner_tag_id,
+        partner_tag_name=partner_tag_name,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
     )

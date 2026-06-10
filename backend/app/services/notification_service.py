@@ -177,13 +177,16 @@ async def notify_partner_and_manager(
         extra_details=extra_details,
     )
 
+    # Prefix client name to title for staff-facing notifications
+    staff_title = f"{client_name} — {title}" if client_name else title
+
     # ── Partner ──────────────────────────────────────────────
     partner_result = await db.execute(
         select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
     )
     partner = partner_result.scalar_one_or_none()
     if partner:
-        await create_notification(db=db, user_id=partner.id, title=title, message=message, **common_kwargs)
+        await create_notification(db=db, user_id=partner.id, title=staff_title, message=message, **common_kwargs)
 
     # ── Manager (via executive assignment chain) ─────────────
     exec_assign_result = await db.execute(
@@ -203,7 +206,7 @@ async def notify_partner_and_manager(
         mgr_assign = mgr_assign_result.scalar_one_or_none()
         if mgr_assign:
             await create_notification(
-                db=db, user_id=mgr_assign.manager_id, title=title, message=message, **common_kwargs
+                db=db, user_id=mgr_assign.manager_id, title=staff_title, message=message, **common_kwargs
             )
 
 

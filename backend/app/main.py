@@ -355,6 +355,8 @@ async def _sync_new_columns():
         # Referral source
         ("client_profiles", "referral_source", "VARCHAR(50)", None),
         ("client_profiles", "referral_source_other", "TEXT", None),
+        # Partner tag
+        ("client_profiles", "partner_tag_id", "UUID", None),
     ]
 
     try:
@@ -407,6 +409,26 @@ async def _sync_new_columns():
                             f'FOREIGN KEY ("{col_name}") REFERENCES "users"("id") ON DELETE SET NULL'
                         )
                         logger.info(f"Added FK constraint '{constraint_name}'")
+
+            # Add FK constraint for partner_tag_id on client_profiles
+            fk_partner_tag = "fk_client_profiles_partner_tag_id"
+            fk_pt_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.table_constraints "
+                "WHERE constraint_name = $1 AND table_name = 'client_profiles'",
+                fk_partner_tag,
+            )
+            if not fk_pt_exists:
+                col_exists = await conn.fetchval(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'client_profiles' AND column_name = 'partner_tag_id'",
+                )
+                if col_exists:
+                    await conn.execute(
+                        f'ALTER TABLE "client_profiles" '
+                        f'ADD CONSTRAINT "{fk_partner_tag}" '
+                        f'FOREIGN KEY ("partner_tag_id") REFERENCES "tags"("id") ON DELETE SET NULL'
+                    )
+                    logger.info(f"Added FK constraint '{fk_partner_tag}'")
 
             # Drop unique constraint on filing_documents to allow multiple files per type
             uq_exists = await conn.fetchval(

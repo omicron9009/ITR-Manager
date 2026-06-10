@@ -222,11 +222,15 @@ class ClientProfileResponse(BaseModel):
     form_submitted_at: Optional[datetime] = None
     assigned_executive_id: Optional[UUID] = None
     assigned_executive_name: Optional[str] = None
+    assigned_manager_id: Optional[UUID] = None
+    assigned_manager_name: Optional[str] = None
     income_heads: Optional[IncomeHeadsResponse] = None
     referral_source: Optional[str] = None
     referral_source_other: Optional[str] = None
     professional_fee: Optional[Decimal] = None
     no_fees_applicable: bool = False
+    partner_tag_id: Optional[UUID] = None
+    partner_tag_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -242,6 +246,10 @@ class ClientListItem(BaseModel):
     account_status: str
     assigned_executive_name: Optional[str] = None
     assigned_executive_id: Optional[UUID] = None
+    assigned_manager_id: Optional[UUID] = None
+    assigned_manager_name: Optional[str] = None
+    partner_tag_id: Optional[UUID] = None
+    partner_tag_name: Optional[str] = None
     active_filing_years: list[str] = []
     current_state: Optional[str] = None
     last_updated: Optional[datetime] = None

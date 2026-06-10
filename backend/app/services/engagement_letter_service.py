@@ -116,6 +116,18 @@ NO_FEE_SECTIONS_TEMPLATE = """5. Professional Fees
 
 No professional fees are applicable for this engagement."""
 
+MUTUALLY_DECIDED_FEE_TEMPLATE = """5. Professional Fees
+
+Professional fees shall be mutually decided depending upon the scope, volume and complexity of work.
+
+Any additional work outside the agreed scope including notices, scrutiny matters, rectifications, appeals, or advisory services may be charged separately based on the nature and extent of work involved.
+
+6. Payment Terms
+
+Fees shall be payable upon communication of the agreed fee and/or prior to filing of the return unless otherwise agreed.
+
+The Firm reserves the right to withhold filing, submission, or delivery of services in case of non-payment of fees."""
+
 
 def generate_engagement_letter_pdf(
     client_name: str,
@@ -140,10 +152,14 @@ def generate_engagement_letter_pdf(
     pdf.cell(0, 7, f"Financial Year: {financial_year}", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.ln(6)
 
-    # Build fee sections based on no_fees_applicable flag
+    # Build fee sections based on no_fees_applicable flag and fee availability
     if no_fees_applicable:
         fee_sections = NO_FEE_SECTIONS_TEMPLATE
         acceptance_section_number = "6"
+    elif professional_fee is None:
+        # Fee not yet decided — use "mutually decided" language
+        fee_sections = MUTUALLY_DECIDED_FEE_TEMPLATE
+        acceptance_section_number = "7"
     else:
         fee_str = f"Rs. {professional_fee:,.2f} plus applicable taxes, if any."
         fee_sections = FEE_SECTIONS_TEMPLATE.format(fee_line=fee_str)

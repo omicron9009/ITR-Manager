@@ -93,7 +93,7 @@ async def register_client(
         await create_notification(
             db=db,
             user_id=partner.id,
-            title="New Client Registration",
+            title=f"{full_name} — New Client Registration",
             message=f"A new client ({full_name}) has registered and is awaiting verification. Please review their details and approve or reject.",
             related_client_id=user.id,
             client_name=full_name,
@@ -172,7 +172,7 @@ async def activate_client(
             await create_notification(
                 db=db,
                 user_id=partner.id,
-                title="Professional Fee Pending",
+                title=f"{client.full_name} — Professional Fee Pending",
                 message=f"Professional fee has not been set for client {client.full_name}. Please set the fee so the client can initiate their filing.",
                 related_client_id=client_id,
                 client_name=client.full_name,

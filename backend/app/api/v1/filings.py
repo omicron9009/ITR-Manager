@@ -62,16 +62,10 @@ async def initiate_filing(
     if not profile or not profile.form_submitted_at:
         raise OnboardingFormNotSubmittedError()
 
-    # Ensure professional fee has been set by Partner before client can file
-    # (skip check if client is marked as no_fees_applicable)
     is_no_fees = profile.no_fees_applicable
-    if not is_no_fees and not profile.professional_fee:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Professional fee has not been set by the firm. Please contact support.",
-        )
 
     # Generate engagement letter PDF and upload to MinIO
+    # Fee may be None — letter will use "mutually decided" language
     from datetime import datetime
     from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter, get_selected_income_heads
 
@@ -163,7 +157,7 @@ async def initiate_filing(
         await create_notification(
             db=db,
             user_id=exec_assignment.executive_id,
-            title="New ITR Filing Initiated",
+            title=f"{current_user.full_name} — New ITR Filing Initiated",
             message=f"A new ITR Filing has been initiated by {current_user.full_name} for FY {body.financial_year}. Please send the document checklist.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,
@@ -272,13 +266,20 @@ async def _send_engagement_letter_email(
 @router.post("/{filing_id}/update-fee", response_model=dict)
 async def update_filing_fee(
     filing_id: UUID,
-    fee: float = Query(..., gt=0, description="Proposed professional fee in rupees"),
+    fee: float = Query(..., gt=0, description="Professional fee in rupees"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Propose a fee change for a filing. Partner only. Client must approve before it takes effect."""
+    """Set/update the professional fee for a filing. Partner only.
+
+    Directly applies the fee, regenerates the engagement letter with the
+    actual fee amount, and emails the revised letter to the client.
+    No client approval step needed — the client pre-agreed to 'mutually decided' fees.
+    """
     from decimal import Decimal
     from datetime import datetime
+    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter, get_selected_income_heads
 
     if current_user.role != UserRole.PARTNER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Partner can update professional fee")
@@ -288,188 +289,115 @@ async def update_filing_fee(
     if not filing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
 
-    if filing.proposed_fee is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A fee change is already pending client approval. Wait for client response first.",
-        )
-
     new_fee = Decimal(str(fee))
-    filing.proposed_fee = new_fee
-    filing.fee_proposed_at = datetime.utcnow()
-    filing.fee_proposed_by = current_user.id
-
-    # Notify client about fee change
-    await create_notification(
-        db=db,
-        user_id=filing.client_id,
-        title="Professional Fee Change Proposed",
-        message=f"A revised professional fee of Rs. {fee:.2f} has been proposed for your ITR filing (FY {filing.financial_year}). Please review and approve or reject the proposed fee.",
-        related_filing_id=filing.id,
-        related_client_id=filing.client_id,
-        financial_year=filing.financial_year,
-        action_by=current_user.full_name,
-        action_url_path=f"/filings/{filing.id}/fee",
-        cta_label="Review Fee Change",
-        extra_details={"Proposed Fee": f"Rs. {fee:.2f}", "Current Fee": f"Rs. {filing.professional_fee:.2f}" if filing.professional_fee else "Not set"},
-    )
-
-    await db.flush()
-    await db.commit()
-
-    return {
-        "message": f"Fee change of Rs. {fee:.2f} proposed. Awaiting client approval.",
-        "filing_id": str(filing_id),
-        "proposed_fee": float(new_fee),
-    }
-
-
-# ─── POST /filings/{filing_id}/approve-fee ──────────────────
-@router.post("/{filing_id}/approve-fee", response_model=dict)
-async def approve_fee_change(
-    filing_id: UUID,
-    background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_active_client),
-    db: AsyncSession = Depends(get_db),
-):
-    """Client approves a proposed fee change. Updates fee and regenerates engagement letter."""
-    from decimal import Decimal
-    from datetime import datetime
-    from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter, get_selected_income_heads
-
-    result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
-    filing = result.scalar_one_or_none()
-    if not filing:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
-
-    if filing.client_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
-
-    if filing.proposed_fee is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No pending fee change to approve")
-
-    # Apply the proposed fee
     old_fee = filing.professional_fee
-    filing.professional_fee = filing.proposed_fee
+    filing.professional_fee = new_fee
+    # Clear any legacy proposal fields
     filing.proposed_fee = None
     filing.fee_proposed_at = None
     filing.fee_proposed_by = None
 
     # Also update the client profile's base fee
     profile_result = await db.execute(
-        select(ClientProfile).where(ClientProfile.user_id == current_user.id)
+        select(ClientProfile).where(ClientProfile.user_id == filing.client_id)
     )
     profile = profile_result.scalar_one_or_none()
     if profile:
-        profile.professional_fee = filing.professional_fee
+        profile.professional_fee = new_fee
+
+    # Fetch client for email and name
+    client_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_result.scalar_one_or_none()
 
     # Fetch client income heads for dynamic engagement letter
     from app.models.client_income_heads import ClientIncomeHeads
     heads_result = await db.execute(
-        select(ClientIncomeHeads).where(ClientIncomeHeads.user_id == current_user.id)
+        select(ClientIncomeHeads).where(ClientIncomeHeads.user_id == filing.client_id)
     )
     client_income_heads = heads_result.scalar_one_or_none()
     selected_heads = get_selected_income_heads(client_income_heads)
 
-    # Regenerate engagement letter PDF with updated fee
+    # Regenerate engagement letter PDF with actual fee
     accepted_at = filing.engagement_accepted_at or datetime.utcnow()
     pdf_bytes = generate_engagement_letter_pdf(
-        client_name=current_user.full_name,
+        client_name=client_user.full_name if client_user else "Client",
         financial_year=filing.financial_year,
-        professional_fee=filing.professional_fee,
+        professional_fee=new_fee,
         accepted_at=accepted_at,
         income_heads=selected_heads,
     )
     engagement_key = upload_engagement_letter(
-        client_id=str(current_user.id),
-        client_name=current_user.full_name,
+        client_id=str(filing.client_id),
+        client_name=client_user.full_name if client_user else "Client",
         financial_year=filing.financial_year,
         pdf_bytes=pdf_bytes,
     )
     filing.engagement_letter_key = engagement_key
 
-    # Notify Partner + Manager
-    await notify_partner_and_manager(
+    # Notify client
+    await create_notification(
         db=db,
-        client_id=current_user.id,
-        title="Fee Change Approved",
-        message=f"{current_user.full_name} has approved the revised professional fee for FY {filing.financial_year}.",
+        user_id=filing.client_id,
+        title="Professional Fee Set",
+        message=f"The professional fee for your ITR filing (FY {filing.financial_year}) has been set to Rs. {fee:.2f}. A revised engagement letter has been emailed to you.",
         related_filing_id=filing.id,
-        related_client_id=current_user.id,
-        client_name=current_user.full_name,
+        related_client_id=filing.client_id,
         financial_year=filing.financial_year,
         action_by=current_user.full_name,
         action_url_path=f"/filings/{filing.id}",
         cta_label="View Filing",
-        extra_details={"Approved Fee": f"Rs. {filing.professional_fee:.2f}"},
     )
 
-    # Email updated engagement letter to client (background)
-    background_tasks.add_task(
-        _send_engagement_letter_email,
-        client_email=current_user.email,
-        client_name=current_user.full_name,
-        financial_year=filing.financial_year,
-        pdf_bytes=pdf_bytes,
-    )
+    # Email revised engagement letter to client (background)
+    if client_user:
+        background_tasks.add_task(
+            _send_engagement_letter_email,
+            client_email=client_user.email,
+            client_name=client_user.full_name,
+            financial_year=filing.financial_year,
+            pdf_bytes=pdf_bytes,
+        )
 
     await db.flush()
     await db.commit()
 
     return {
-        "message": f"Fee change approved. Updated to Rs. {filing.professional_fee:.2f}. Updated engagement letter has been emailed.",
+        "message": f"Professional fee set to Rs. {fee:.2f}. Revised engagement letter emailed to client.",
         "filing_id": str(filing_id),
-        "professional_fee": float(filing.professional_fee),
+        "professional_fee": float(new_fee),
+        "old_fee": float(old_fee) if old_fee else None,
     }
 
 
-# ─── POST /filings/{filing_id}/reject-fee ───────────────────
-@router.post("/{filing_id}/reject-fee", response_model=dict)
+# ─── POST /filings/{filing_id}/approve-fee (DEPRECATED) ─────
+@router.post("/{filing_id}/approve-fee", response_model=dict, deprecated=True)
+async def approve_fee_change(
+    filing_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_active_client),
+    db: AsyncSession = Depends(get_db),
+):
+    """DEPRECATED: Fee is now set directly by Partner via update-fee. No client approval needed."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint is deprecated. Professional fees are now set directly by the Partner. "
+               "No client approval step is required.",
+    )
+
+
+# ─── POST /filings/{filing_id}/reject-fee (DEPRECATED) ──────
+@router.post("/{filing_id}/reject-fee", response_model=dict, deprecated=True)
 async def reject_fee_change(
     filing_id: UUID,
     current_user: User = Depends(get_current_active_client),
     db: AsyncSession = Depends(get_db),
 ):
-    """Client rejects a proposed fee change. Fee stays unchanged."""
-    result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
-    filing = result.scalar_one_or_none()
-    if not filing:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
-
-    if filing.client_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
-
-    if filing.proposed_fee is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No pending fee change to reject")
-
-    rejected_fee = filing.proposed_fee
-    filing.proposed_fee = None
-    filing.fee_proposed_at = None
-    filing.fee_proposed_by = None
-
-    # Notify Partner + Manager about rejection
-    await notify_partner_and_manager(
-        db=db,
-        client_id=current_user.id,
-        title="Fee Change Rejected",
-        message=f"{current_user.full_name} has rejected the proposed fee change for FY {filing.financial_year}. The current fee remains unchanged.",
-        related_filing_id=filing.id,
-        related_client_id=current_user.id,
-        client_name=current_user.full_name,
-        financial_year=filing.financial_year,
-        action_by=current_user.full_name,
-        action_url_path=f"/filings/{filing.id}",
-        cta_label="View Filing",
-        extra_details={"Rejected Fee": f"Rs. {rejected_fee:.2f}", "Current Fee": f"Rs. {filing.professional_fee:.2f}" if filing.professional_fee else "Not set"},
+    """DEPRECATED: Fee is now set directly by Partner via update-fee. No client approval/rejection needed."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint is deprecated. Professional fees are now set directly by the Partner. "
+               "No client approval/rejection step is required.",
     )
-
-    await db.flush()
-    await db.commit()
-
-    return {
-        "message": f"Fee change rejected. Current fee remains Rs. {filing.professional_fee:.2f}.",
-        "filing_id": str(filing_id),
-    }
 
 
 # ─── GET /filings ───────────────────────────────────────────
@@ -901,7 +829,7 @@ async def submit_documents(
         await create_notification(
             db=db,
             user_id=filing.assigned_executive_id,
-            title="Documents Submitted for Review",
+            title=f"{current_user.full_name} — Documents Submitted for Review",
             message=f"{current_user.full_name} has submitted documents for FY {filing.financial_year}. Please review and approve.",
             related_filing_id=filing.id,
             related_client_id=current_user.id,

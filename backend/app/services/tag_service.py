@@ -107,6 +107,17 @@ async def get_tag_executive_count(db: AsyncSession, tag_id: UUID) -> int:
     return result.scalar() or 0
 
 
+async def get_tag_client_count(db: AsyncSession, tag_id: UUID) -> int:
+    """Count clients assigned to a partner tag."""
+    from app.models.client_profile import ClientProfile
+    result = await db.execute(
+        select(func.count()).select_from(ClientProfile).where(
+            ClientProfile.partner_tag_id == tag_id,
+        )
+    )
+    return result.scalar() or 0
+
+
 # ═══════════════════════════════════════════════════════════════
 # ASSIGNMENT
 # ═══════════════════════════════════════════════════════════════
@@ -132,6 +143,13 @@ async def assign_tag_to_executive(
     tag = tag_result.scalar_one_or_none()
     if not tag:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found or inactive")
+
+    # PARTNER tags can only be assigned to clients, not executives
+    if tag.tag_type == TagType.PARTNER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PARTNER tags can only be assigned to clients, not executives",
+        )
 
     # Check existing assignment
     existing = await db.execute(
@@ -389,6 +407,148 @@ async def get_location_detail(db: AsyncSession, tag_id: UUID) -> dict:
         "completed_filings": completed_filings,
         "halted_filings": halted,
         "executives": executives,
+        "recent_filings": recent_filings,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# PARTNER TAG ANALYTICS
+# ═══════════════════════════════════════════════════════════════
+
+
+async def _get_filing_stats_for_clients(db: AsyncSession, client_ids: list[UUID]) -> dict:
+    """Get aggregate filing stats for a set of clients."""
+    if not client_ids:
+        return {"total_filings": 0, "active_filings": 0, "completed_filings": 0, "halted_filings": 0}
+
+    result = await db.execute(
+        select(ITRFiling.status, func.count()).where(
+            ITRFiling.client_id.in_(client_ids),
+        ).group_by(ITRFiling.status)
+    )
+    rows = result.all()
+
+    total = 0
+    active = 0
+    completed = 0
+    halted = 0
+    for filing_status, count in rows:
+        total += count
+        if filing_status == FilingStatus.COMPLETED:
+            completed += count
+        elif filing_status == FilingStatus.HALTED:
+            halted += count
+        else:
+            active += count
+
+    return {
+        "total_filings": total,
+        "active_filings": active,
+        "completed_filings": completed,
+        "halted_filings": halted,
+    }
+
+
+async def get_partner_tag_summary(db: AsyncSession) -> list[dict]:
+    """Get summary for all partner tags with client counts and filing stats."""
+    from app.models.client_profile import ClientProfile
+
+    tags_result = await db.execute(
+        select(Tag).where(Tag.tag_type == TagType.PARTNER, Tag.is_active == True).order_by(Tag.name)
+    )
+    partner_tags = tags_result.scalars().all()
+
+    items = []
+    for tag in partner_tags:
+        # Get client IDs with this partner tag
+        client_result = await db.execute(
+            select(ClientProfile.user_id).where(ClientProfile.partner_tag_id == tag.id)
+        )
+        client_ids = [row[0] for row in client_result.all()]
+
+        stats = await _get_filing_stats_for_clients(db, client_ids)
+
+        items.append({
+            "tag_id": tag.id,
+            "tag_name": tag.name,
+            "client_count": len(client_ids),
+            **stats,
+        })
+    return items
+
+
+async def get_partner_tag_detail(db: AsyncSession, tag_id: UUID) -> dict:
+    """Detailed view for a single partner tag: clients and recent filings."""
+    from app.models.client_profile import ClientProfile
+
+    tag_result = await db.execute(
+        select(Tag).where(Tag.id == tag_id, Tag.tag_type == TagType.PARTNER)
+    )
+    tag = tag_result.scalar_one_or_none()
+    if not tag:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Partner tag not found")
+
+    # Get clients with this tag
+    client_result = await db.execute(
+        select(ClientProfile.user_id).where(ClientProfile.partner_tag_id == tag.id)
+    )
+    client_ids = [row[0] for row in client_result.all()]
+
+    # Fetch client details
+    clients_data = []
+    if client_ids:
+        users_result = await db.execute(
+            select(User).where(User.id.in_(client_ids)).order_by(User.full_name)
+        )
+        users = users_result.scalars().all()
+
+        # Batch-fetch latest active filing per client
+        filings_result = await db.execute(
+            select(ITRFiling.client_id, ITRFiling.financial_year, ITRFiling.status).where(
+                ITRFiling.client_id.in_(client_ids),
+                ITRFiling.status.notin_([FilingStatus.COMPLETED, FilingStatus.HALTED]),
+            ).order_by(ITRFiling.created_at.desc())
+        )
+        latest_filing_by_client: dict = {}
+        for cid, fy, st in filings_result.all():
+            if cid not in latest_filing_by_client:
+                latest_filing_by_client[cid] = (fy, st)
+
+        for user in users:
+            latest = latest_filing_by_client.get(user.id)
+            clients_data.append({
+                "client_id": user.id,
+                "client_name": user.full_name,
+                "account_status": user.account_status.value,
+                "active_filing_year": latest[0] if latest else None,
+                "filing_status": latest[1].value if latest else None,
+            })
+
+    # Recent filings for these clients
+    recent_filings = []
+    if client_ids:
+        filings_result = await db.execute(
+            select(ITRFiling, User).join(User, ITRFiling.client_id == User.id).where(
+                ITRFiling.client_id.in_(client_ids),
+            ).order_by(ITRFiling.updated_at.desc()).limit(20)
+        )
+        for filing, client in filings_result.all():
+            recent_filings.append({
+                "filing_id": filing.id,
+                "client_name": client.full_name,
+                "financial_year": filing.financial_year,
+                "status": filing.status.value,
+                "last_updated": filing.updated_at,
+            })
+
+    stats = await _get_filing_stats_for_clients(db, client_ids)
+
+    return {
+        "tag_id": tag.id,
+        "tag_name": tag.name,
+        "client_count": len(client_ids),
+        **stats,
+        "clients": clients_data,
         "recent_filings": recent_filings,
     }
 
