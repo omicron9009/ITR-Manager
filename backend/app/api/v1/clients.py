@@ -57,6 +57,7 @@ async def register_new_client(
             "interest_dividend": request_data.interest_dividend,
             "foreign_assets": request_data.foreign_assets,
             "any_other": request_data.any_other,
+            "any_other_text": request_data.any_other_text if request_data.any_other else None,
         },
         referral_source=request_data.referral_source,
         referral_source_other=request_data.referral_source_other,
@@ -503,6 +504,10 @@ async def update_my_income_heads(
     update_data = body.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(heads, key, value)
+
+    # Clear any_other_text if any_other is set to False
+    if "any_other" in update_data and not update_data["any_other"]:
+        heads.any_other_text = None
 
     await db.commit()
     await db.refresh(heads)

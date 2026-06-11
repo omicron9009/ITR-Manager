@@ -101,6 +101,7 @@ class ClientRegistrationRequest(BaseModel):
     interest_dividend: bool = Field(False)
     foreign_assets: bool = Field(False)
     any_other: bool = Field(False)
+    any_other_text: Optional[str] = Field(None, max_length=255, description="Description of 'Any Other' income source")
 
     # Referral source
     referral_source: str = Field(..., description="How did you hear about us? One of: WEBSITE, FRIEND_RELATIVE, PROFESSIONAL_REFERRAL, DIRECTED_BY_FIRM, OTHER")
@@ -182,6 +183,7 @@ class IncomeHeadsResponse(BaseModel):
     interest_dividend: bool = False
     foreign_assets: bool = False
     any_other: bool = False
+    any_other_text: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -198,6 +200,7 @@ class IncomeHeadsUpdateRequest(BaseModel):
     interest_dividend: Optional[bool] = None
     foreign_assets: Optional[bool] = None
     any_other: Optional[bool] = None
+    any_other_text: Optional[str] = Field(None, max_length=255)
 
 
 class ProfileUpdateRequest(BaseModel):

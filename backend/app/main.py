@@ -357,6 +357,8 @@ async def _sync_new_columns():
         ("client_profiles", "referral_source_other", "TEXT", None),
         # Partner tag
         ("client_profiles", "partner_tag_id", "UUID", None),
+        # Any Other income head description
+        ("client_income_heads", "any_other_text", "VARCHAR(255)", None),
     ]
 
     try:

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -37,6 +37,7 @@ class ClientIncomeHeads(Base):
 
     # Head 6: Any Other
     any_other = Column(Boolean, nullable=False, default=False)
+    any_other_text = Column(String(255), nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
