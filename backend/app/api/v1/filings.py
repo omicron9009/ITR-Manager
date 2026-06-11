@@ -17,6 +17,8 @@ from app.models.filing import ITRFiling
 from app.models.filing_state_history import FilingStateHistory
 from app.models.user import User
 from app.schemas.filing import (
+    ConfirmIncomeHeadsRequest,
+    ConfirmIncomeHeadsResponse,
     FilingHaltRequest,
     FilingInitiateRequest,
     FilingListResponse,
@@ -260,6 +262,170 @@ async def _send_engagement_letter_email(
     except Exception as e:
         import logging
         logging.getLogger("app").error(f"Failed to email engagement letter to {client_email}: {e}")
+
+
+# ─── POST /filings/{filing_id}/confirm-income-heads ─────────
+@router.post(
+    "/{filing_id}/confirm-income-heads",
+    response_model=ConfirmIncomeHeadsResponse,
+)
+async def confirm_income_heads(
+    filing_id: UUID,
+    body: ConfirmIncomeHeadsRequest,
+    request: Request,
+    current_user: User = Depends(get_current_active_client),
+    db: AsyncSession = Depends(get_db),
+):
+    """Client re-confirms their income heads at the start of a filing.
+
+    - Updates the client's master `ClientIncomeHeads` row.
+    - Snapshots the values onto the filing (`income_heads_snapshot`).
+    - Auto-assigns BASE document placeholders for the selected heads.
+    - Auto-transitions INITIATED -> DOCUMENT_UPLOAD if a manager+executive are assigned.
+    """
+    from datetime import datetime as _dt
+
+    from app.enums import DocSubCategory, IncomeHeadCategory, INCOME_HEAD_FLAG_FIELDS
+    from app.models.client_income_heads import ClientIncomeHeads
+    from app.models.executive_assignment import ExecutiveClientAssignment
+    from app.models.manager_client_assignment import ManagerClientAssignment
+    from app.services.document_service import (
+        assign_document_placeholders,
+        resolve_doc_types_for_income_heads,
+    )
+
+    # Load filing and authorize
+    result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
+    filing = result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    if filing.client_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
+
+    if filing.status not in (FilingStatus.INITIATED, FilingStatus.DOCUMENT_UPLOAD):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot confirm income heads when filing is in {filing.status.value} state",
+        )
+
+    # 1. Update master ClientIncomeHeads row (create if missing)
+    heads_result = await db.execute(
+        select(ClientIncomeHeads).where(ClientIncomeHeads.user_id == current_user.id)
+    )
+    heads_row = heads_result.scalar_one_or_none()
+
+    payload = body.model_dump()
+    if heads_row is None:
+        heads_row = ClientIncomeHeads(user_id=current_user.id, **payload)
+        db.add(heads_row)
+    else:
+        for field, value in payload.items():
+            setattr(heads_row, field, value)
+
+    # 2. Snapshot onto filing
+    now = _dt.utcnow()
+    filing.income_heads_snapshot = payload
+    filing.income_heads_confirmed_at = now
+
+    await db.flush()
+
+    # 3. Resolve selected income head categories from the boolean flags
+    selected_heads: list[IncomeHeadCategory] = []
+    for head, field in INCOME_HEAD_FLAG_FIELDS.items():
+        if payload.get(field):
+            selected_heads.append(head)
+
+    # 4. Resolve BASE doc-type IDs for those heads (active only)
+    base_doc_type_ids = await resolve_doc_types_for_income_heads(
+        db=db,
+        heads=selected_heads,
+        sub_category=DocSubCategory.BASE,
+        only_active=True,
+    )
+
+    # 5. Assign placeholders if any
+    assigned_count = 0
+    if base_doc_type_ids:
+        # Determine if filing has manager+executive (required by assign endpoint logic).
+        # If not yet assigned, we still create the placeholders but DO NOT transition.
+        placeholders = await assign_document_placeholders(
+            db=db,
+            filing_id=filing.id,
+            document_type_ids=base_doc_type_ids,
+            assigned_by=current_user.id,
+        )
+        assigned_count = len(placeholders)
+
+    # 6. Transition INITIATED -> DOCUMENT_UPLOAD only if manager + executive are assigned
+    transitioned_to: Optional[FilingStatus] = None
+    if filing.status == FilingStatus.INITIATED:
+        mgr_result = await db.execute(
+            select(ManagerClientAssignment).where(
+                ManagerClientAssignment.client_id == filing.client_id,
+                ManagerClientAssignment.is_active == True,
+            )
+        )
+        has_manager = mgr_result.scalar_one_or_none() is not None
+
+        exec_result = await db.execute(
+            select(ExecutiveClientAssignment).where(
+                ExecutiveClientAssignment.client_id == filing.client_id,
+                ExecutiveClientAssignment.is_active == True,
+            )
+        )
+        exec_assignment = exec_result.scalar_one_or_none()
+
+        if has_manager and exec_assignment:
+            if not filing.assigned_executive_id:
+                filing.assigned_executive_id = exec_assignment.executive_id
+
+            await transition_filing_status(
+                db=db,
+                filing=filing,
+                to_status=FilingStatus.DOCUMENT_UPLOAD,
+                changed_by=current_user.id,
+                remarks="Income heads confirmed; base documents auto-assigned",
+            )
+            transitioned_to = FilingStatus.DOCUMENT_UPLOAD
+
+    # 7. Audit
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.INCOME_HEADS_CONFIRMED,
+        actor_id=current_user.id,
+        client_id=current_user.id,
+        filing_id=filing.id,
+        details={
+            "selected_heads": [h.value for h in selected_heads],
+            "base_documents_assigned": assigned_count,
+            "auto_transitioned": transitioned_to.value if transitioned_to else None,
+        },
+        ip_address=request.client.host if request.client else None,
+    )
+
+    # 8. Notify client
+    if transitioned_to:
+        await create_notification(
+            db=db,
+            user_id=current_user.id,
+            title="Document Checklist Ready",
+            message=(
+                f"{assigned_count} base document(s) have been added based on your "
+                "income heads. Please upload them to proceed."
+            ),
+            related_filing_id=filing.id,
+        )
+
+    await db.flush()
+
+    return ConfirmIncomeHeadsResponse(
+        filing_id=filing.id,
+        income_heads_snapshot=payload,
+        income_heads_confirmed_at=now,
+        base_documents_assigned=assigned_count,
+        transitioned_to=transitioned_to,
+    )
 
 
 # ─── POST /filings/{filing_id}/update-fee ───────────────────

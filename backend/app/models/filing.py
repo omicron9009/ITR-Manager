@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -49,6 +49,10 @@ class ITRFiling(Base):
     halted_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     halt_reason = Column(Text, nullable=True)
 
+    # Income heads snapshot (confirmed by client at filing initiate / before doc upload)
+    income_heads_snapshot = Column(JSONB, nullable=True)
+    income_heads_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+
     # Audit columns
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     updated_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -63,6 +67,7 @@ class ITRFiling(Base):
     updater = relationship("User", foreign_keys=[updated_by])
 
     documents = relationship("FilingDocument", back_populates="filing", cascade="all, delete-orphan")
+    text_fields = relationship("FilingTextField", back_populates="filing", cascade="all, delete-orphan")
     computations = relationship("FilingComputation", back_populates="filing", cascade="all, delete-orphan")
     completed_docs = relationship("FilingCompletedDoc", back_populates="filing", cascade="all, delete-orphan")
     other_docs = relationship("FilingOtherDoc", back_populates="filing", cascade="all, delete-orphan")

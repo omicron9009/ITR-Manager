@@ -246,7 +246,7 @@ async def _sync_pg_enums():
     from app.enums import (
         AccountStatus, FilingStatus, DocumentStatus, ComputationStatus,
         CompletedDocType, CompletedDocStatus, FormFieldType, AuditEventType, NotificationChannel, UserRole,
-        TagType, ReferralSource,
+        TagType, ReferralSource, IncomeHeadCategory, DocSubCategory, TextFieldStatus,
     )
     enum_map = {
         "user_role": UserRole,
@@ -261,6 +261,9 @@ async def _sync_pg_enums():
         "notification_channel": NotificationChannel,
         "tag_type": TagType,
         "referral_source": ReferralSource,
+        "income_head_category": IncomeHeadCategory,
+        "doc_sub_category": DocSubCategory,
+        "text_field_status": TextFieldStatus,
     }
 
     try:
@@ -357,6 +360,8 @@ async def _sync_new_columns():
         ("client_profiles", "referral_source_other", "TEXT", None),
         # Partner tag
         ("client_profiles", "partner_tag_id", "UUID", None),
+        # Any Other income head description
+        ("client_income_heads", "any_other_text", "VARCHAR(255)", None),
     ]
 
     try:
@@ -620,6 +625,128 @@ async def _sync_new_columns():
                             f'ALTER TABLE "email_config" DROP COLUMN "{old_col}"'
                         )
                         logger.info(f"Dropped column '{old_col}' from email_config")
+
+            # ─── Income head doc-type categorization ─────────────────────
+            # Add snapshot columns to itr_filings (idempotent)
+            for col, col_type in [
+                ("income_heads_snapshot", "JSONB"),
+                ("income_heads_confirmed_at", "TIMESTAMPTZ"),
+            ]:
+                col_exists = await conn.fetchval(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'itr_filings' AND column_name = $1",
+                    col,
+                )
+                if not col_exists:
+                    await conn.execute(
+                        f'ALTER TABLE "itr_filings" ADD COLUMN "{col}" {col_type}'
+                    )
+                    logger.info(f"Added column '{col}' to itr_filings")
+
+            # Create enum types if missing
+            ihc_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_type WHERE typname = 'income_head_category'"
+            )
+            if not ihc_exists:
+                await conn.execute(
+                    "CREATE TYPE income_head_category AS ENUM ("
+                    "'SALARY','ESOP','RENTAL_INCOME','MORE_THAN_2_PROPERTIES',"
+                    "'CAPITAL_GAIN_SHARES','CAPITAL_GAIN_LAND','BUSINESS_PROFESSION',"
+                    "'INTEREST_DIVIDEND','FOREIGN_ASSETS','ANY_OTHER','OTHERS')"
+                )
+                logger.info("Created enum type 'income_head_category'")
+
+            dsc_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_type WHERE typname = 'doc_sub_category'"
+            )
+            if not dsc_exists:
+                await conn.execute(
+                    "CREATE TYPE doc_sub_category AS ENUM ('BASE','INCREMENTAL')"
+                )
+                logger.info("Created enum type 'doc_sub_category'")
+
+            # Create master_doc_type_income_heads junction table
+            mapping_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'master_doc_type_income_heads'"
+            )
+            if not mapping_table_exists:
+                await conn.execute("""
+                    CREATE TABLE master_doc_type_income_heads (
+                        id UUID PRIMARY KEY,
+                        doc_type_id UUID NOT NULL REFERENCES master_document_types(id) ON DELETE CASCADE,
+                        income_head income_head_category NOT NULL,
+                        sub_category doc_sub_category NOT NULL DEFAULT 'INCREMENTAL',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        CONSTRAINT uq_doc_type_income_head UNIQUE (doc_type_id, income_head)
+                    )
+                """)
+                await conn.execute(
+                    'CREATE INDEX "ix_mdtih_doc_type" ON "master_doc_type_income_heads" ("doc_type_id")'
+                )
+                await conn.execute(
+                    'CREATE INDEX "ix_mdtih_income_head" ON "master_doc_type_income_heads" ("income_head")'
+                )
+                logger.info("Created table 'master_doc_type_income_heads'")
+
+            # ─── Text-field placeholders ─────────────────────────────────
+            tfs_enum_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_type WHERE typname = 'text_field_status'"
+            )
+            if not tfs_enum_exists:
+                await conn.execute(
+                    "CREATE TYPE text_field_status AS ENUM ('PENDING','FILLED','APPROVED','REJECTED')"
+                )
+                logger.info("Created enum type 'text_field_status'")
+
+            mtft_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'master_text_field_types'"
+            )
+            if not mtft_table_exists:
+                await conn.execute("""
+                    CREATE TABLE master_text_field_types (
+                        id UUID PRIMARY KEY,
+                        name VARCHAR(255) NOT NULL UNIQUE,
+                        description TEXT,
+                        max_length INTEGER NOT NULL DEFAULT 200,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        display_order INTEGER NOT NULL DEFAULT 0,
+                        created_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                        updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """)
+                logger.info("Created table 'master_text_field_types'")
+
+            ftf_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'filing_text_fields'"
+            )
+            if not ftf_table_exists:
+                await conn.execute("""
+                    CREATE TABLE filing_text_fields (
+                        id UUID PRIMARY KEY,
+                        filing_id UUID NOT NULL REFERENCES itr_filings(id) ON DELETE CASCADE,
+                        field_type_id UUID NOT NULL REFERENCES master_text_field_types(id) ON DELETE RESTRICT,
+                        status text_field_status NOT NULL DEFAULT 'PENDING',
+                        value TEXT,
+                        rejection_reason TEXT,
+                        filled_at TIMESTAMPTZ,
+                        filled_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                        reviewed_at TIMESTAMPTZ,
+                        reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                        assigned_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                        assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """)
+                await conn.execute(
+                    'CREATE INDEX "ix_filing_text_field_type" ON "filing_text_fields" ("filing_id", "field_type_id")'
+                )
+                logger.info("Created table 'filing_text_fields'")
 
         finally:
             await conn.close()

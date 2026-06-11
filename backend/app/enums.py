@@ -84,6 +84,7 @@ class AuditEventType(str, enum.Enum):
     FILING_STATE_CHANGED = "FILING_STATE_CHANGED"
     FILING_HALTED = "FILING_HALTED"
     DOCUMENT_PLACEHOLDER_CREATED = "DOCUMENT_PLACEHOLDER_CREATED"
+    DOCUMENT_PLACEHOLDER_REMOVED = "DOCUMENT_PLACEHOLDER_REMOVED"
     DOCUMENT_UPLOADED = "DOCUMENT_UPLOADED"
     DOCUMENT_APPROVED = "DOCUMENT_APPROVED"
     DOCUMENT_REJECTED = "DOCUMENT_REJECTED"
@@ -109,6 +110,16 @@ class AuditEventType(str, enum.Enum):
     MASTER_DOC_TYPE_ADDED = "MASTER_DOC_TYPE_ADDED"
     MASTER_DOC_TYPE_UPDATED = "MASTER_DOC_TYPE_UPDATED"
     MASTER_DOC_TYPE_REMOVED = "MASTER_DOC_TYPE_REMOVED"
+    INCOME_HEADS_CONFIRMED = "INCOME_HEADS_CONFIRMED"
+    # Text-field placeholders
+    TEXT_FIELD_TYPE_ADDED = "TEXT_FIELD_TYPE_ADDED"
+    TEXT_FIELD_TYPE_UPDATED = "TEXT_FIELD_TYPE_UPDATED"
+    TEXT_FIELD_TYPE_REMOVED = "TEXT_FIELD_TYPE_REMOVED"
+    TEXT_FIELD_PLACEHOLDER_CREATED = "TEXT_FIELD_PLACEHOLDER_CREATED"
+    TEXT_FIELD_PLACEHOLDER_REMOVED = "TEXT_FIELD_PLACEHOLDER_REMOVED"
+    TEXT_FIELD_FILLED = "TEXT_FIELD_FILLED"
+    TEXT_FIELD_APPROVED = "TEXT_FIELD_APPROVED"
+    TEXT_FIELD_REJECTED = "TEXT_FIELD_REJECTED"
 
 
 class NotificationChannel(str, enum.Enum):
@@ -128,6 +139,70 @@ class ReferralSource(str, enum.Enum):
     PROFESSIONAL_REFERRAL = "PROFESSIONAL_REFERRAL"
     DIRECTED_BY_FIRM = "DIRECTED_BY_FIRM"
     OTHER = "OTHER"
+
+
+class IncomeHeadCategory(str, enum.Enum):
+    """Categories used to tag MasterDocumentType to client income heads.
+
+    The first 10 values mirror the boolean flags on `client_income_heads`.
+    `OTHERS` is a doc-side catch-all bucket — clients never select it.
+    """
+    SALARY = "SALARY"
+    ESOP = "ESOP"
+    RENTAL_INCOME = "RENTAL_INCOME"
+    MORE_THAN_2_PROPERTIES = "MORE_THAN_2_PROPERTIES"
+    CAPITAL_GAIN_SHARES = "CAPITAL_GAIN_SHARES"
+    CAPITAL_GAIN_LAND = "CAPITAL_GAIN_LAND"
+    BUSINESS_PROFESSION = "BUSINESS_PROFESSION"
+    INTEREST_DIVIDEND = "INTEREST_DIVIDEND"
+    FOREIGN_ASSETS = "FOREIGN_ASSETS"
+    ANY_OTHER = "ANY_OTHER"
+    OTHERS = "OTHERS"
+
+
+# Mapping from IncomeHeadCategory → ClientIncomeHeads boolean field name.
+# OTHERS is intentionally absent — it's a doc-side bucket only.
+INCOME_HEAD_FLAG_FIELDS: dict[IncomeHeadCategory, str] = {
+    IncomeHeadCategory.SALARY: "salary",
+    IncomeHeadCategory.ESOP: "esop",
+    IncomeHeadCategory.RENTAL_INCOME: "rental_income",
+    IncomeHeadCategory.MORE_THAN_2_PROPERTIES: "more_than_2_properties",
+    IncomeHeadCategory.CAPITAL_GAIN_SHARES: "capital_gain_shares",
+    IncomeHeadCategory.CAPITAL_GAIN_LAND: "capital_gain_land",
+    IncomeHeadCategory.BUSINESS_PROFESSION: "business_profession",
+    IncomeHeadCategory.INTEREST_DIVIDEND: "interest_dividend",
+    IncomeHeadCategory.FOREIGN_ASSETS: "foreign_assets",
+    IncomeHeadCategory.ANY_OTHER: "any_other",
+}
+
+# Human-friendly labels used by the catalog endpoint and frontend.
+INCOME_HEAD_LABELS: dict[IncomeHeadCategory, str] = {
+    IncomeHeadCategory.SALARY: "Salary",
+    IncomeHeadCategory.ESOP: "ESOP",
+    IncomeHeadCategory.RENTAL_INCOME: "Rental Income",
+    IncomeHeadCategory.MORE_THAN_2_PROPERTIES: "More Than 2 Properties",
+    IncomeHeadCategory.CAPITAL_GAIN_SHARES: "Capital Gain — Shares",
+    IncomeHeadCategory.CAPITAL_GAIN_LAND: "Capital Gain — Land",
+    IncomeHeadCategory.BUSINESS_PROFESSION: "Business / Profession",
+    IncomeHeadCategory.INTEREST_DIVIDEND: "Interest & Dividend",
+    IncomeHeadCategory.FOREIGN_ASSETS: "Foreign Assets",
+    IncomeHeadCategory.ANY_OTHER: "Any Other",
+    IncomeHeadCategory.OTHERS: "Others",
+}
+
+
+class DocSubCategory(str, enum.Enum):
+    """Sub-category of a MasterDocumentType under a given income head."""
+    BASE = "BASE"
+    INCREMENTAL = "INCREMENTAL"
+
+
+class TextFieldStatus(str, enum.Enum):
+    """Lifecycle status for a per-filing text-field placeholder."""
+    PENDING = "PENDING"
+    FILLED = "FILLED"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class ActionItemType(str, enum.Enum):

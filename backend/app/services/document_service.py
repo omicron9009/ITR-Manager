@@ -8,13 +8,45 @@ from fastapi import HTTPException, status as http_status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.enums import AuditEventType, DocumentStatus, FilingStatus
+from app.enums import AuditEventType, DocSubCategory, DocumentStatus, FilingStatus, IncomeHeadCategory
 from app.models.filing import ITRFiling
 from app.models.filing_document import FilingDocument
+from app.models.master_doc_type_income_head import MasterDocTypeIncomeHead
 from app.models.master_document_type import MasterDocumentType
 from app.models.stored_file import StoredFile
 from app.services.audit_service import record_audit_event
 from app.services.notification_service import create_notification
+
+
+async def resolve_doc_types_for_income_heads(
+    db: AsyncSession,
+    heads: list[IncomeHeadCategory],
+    sub_category: Optional[DocSubCategory] = None,
+    only_active: bool = True,
+) -> list[UUID]:
+    """Return doc-type IDs that are mapped to ANY of the given heads.
+
+    Optionally filter by sub_category (e.g. BASE) and active flag.
+    """
+    if not heads:
+        return []
+
+    q = (
+        select(MasterDocTypeIncomeHead.doc_type_id)
+        .where(MasterDocTypeIncomeHead.income_head.in_(heads))
+        .distinct()
+    )
+    if sub_category is not None:
+        q = q.where(MasterDocTypeIncomeHead.sub_category == sub_category)
+
+    if only_active:
+        q = q.join(
+            MasterDocumentType,
+            MasterDocumentType.id == MasterDocTypeIncomeHead.doc_type_id,
+        ).where(MasterDocumentType.is_active == True)  # noqa: E712
+
+    result = await db.execute(q)
+    return [row for row in result.scalars().all()]
 
 
 async def assign_document_placeholders(

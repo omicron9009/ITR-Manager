@@ -71,6 +71,34 @@ class FilingHaltRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=1000)
 
 
+# ─── Confirm Income Heads (Client) ──────────────────────────
+class ConfirmIncomeHeadsRequest(BaseModel):
+    """Body for POST /filings/{filing_id}/confirm-income-heads.
+
+    All booleans default False if omitted. Updates the client's master
+    `ClientIncomeHeads` row AND snapshots the values onto the filing.
+    """
+    salary: bool = False
+    esop: bool = False
+    rental_income: bool = False
+    more_than_2_properties: bool = False
+    capital_gain_shares: bool = False
+    capital_gain_land: bool = False
+    business_profession: bool = False
+    interest_dividend: bool = False
+    foreign_assets: bool = False
+    any_other: bool = False
+    any_other_text: Optional[str] = Field(None, max_length=255)
+
+
+class ConfirmIncomeHeadsResponse(BaseModel):
+    filing_id: UUID
+    income_heads_snapshot: dict
+    income_heads_confirmed_at: datetime
+    base_documents_assigned: int
+    transitioned_to: Optional[FilingStatus] = None
+
+
 # ─── State History ──────────────────────────────────────────
 class FilingStateHistoryItem(BaseModel):
     id: UUID

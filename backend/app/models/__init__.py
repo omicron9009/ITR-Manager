@@ -7,9 +7,12 @@ from app.models.executive_assignment import ExecutiveClientAssignment  # noqa: F
 from app.models.manager_executive_assignment import ManagerExecutiveAssignment  # noqa: F401
 from app.models.manager_client_assignment import ManagerClientAssignment  # noqa: F401
 from app.models.master_document_type import MasterDocumentType  # noqa: F401
+from app.models.master_doc_type_income_head import MasterDocTypeIncomeHead  # noqa: F401
+from app.models.master_text_field_type import MasterTextFieldType  # noqa: F401
 from app.models.onboarding_form_field import OnboardingFormField  # noqa: F401
 from app.models.filing import ITRFiling  # noqa: F401
 from app.models.filing_document import FilingDocument  # noqa: F401
+from app.models.filing_text_field import FilingTextField  # noqa: F401
 from app.models.filing_computation import FilingComputation  # noqa: F401
 from app.models.filing_completed_doc import FilingCompletedDoc  # noqa: F401
 from app.models.filing_state_history import FilingStateHistory  # noqa: F401
