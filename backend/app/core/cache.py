@@ -136,7 +136,7 @@ async def bump_version(namespace: str) -> None:
     try:
         await _redis.incr(f"itr:_ver:{namespace}")
     except RedisError as e:
-        logger.debug("Cache bump_version(%s) failed: %s", namespace, e)
+        logger.warning("Cache bump_version(%s) failed — stale entries may persist until TTL: %s", namespace, e)
 
 
 # ─── Low-level get/set ──────────────────────────────────────

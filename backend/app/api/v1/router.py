@@ -20,6 +20,7 @@ from app.api.v1 import (
     audit,
     storage,
     tags,
+    text_fields,
     reports,
 )
 
@@ -43,3 +44,4 @@ api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
 api_router.include_router(action_items.router, prefix="/action-items", tags=["Action Items"])
 api_router.include_router(feedback.router, prefix="/feedback", tags=["Feedback"])
 api_router.include_router(internal_workings.router, prefix="/internal-workings", tags=["Internal Workings"])
+api_router.include_router(text_fields.router, prefix="/text-fields", tags=["Text Fields"])

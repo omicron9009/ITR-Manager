@@ -11,9 +11,10 @@ from app.core.file_validation import sanitize_filename, validate_file_size, vali
 from app.core.permissions import enforce_filing_access
 from app.core.security import get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_manager_or_partner, get_current_partner, get_current_user
 from app.database import get_db
-from app.enums import AuditEventType, DocumentStatus, FilingStatus, UserRole
+from app.enums import AuditEventType, DocSubCategory, DocumentStatus, FilingStatus, IncomeHeadCategory, INCOME_HEAD_LABELS, UserRole
 from app.models.filing import ITRFiling
 from app.models.filing_document import FilingDocument
+from app.models.master_doc_type_income_head import MasterDocTypeIncomeHead
 from app.models.master_document_type import MasterDocumentType
 from app.models.stored_file import StoredFile
 from app.models.user import User
@@ -27,6 +28,9 @@ from app.schemas.document import (
     FilingDocumentGroupResponse,
     FilingDocumentListResponse,
     FilingDocumentResponse,
+    IncomeHeadCatalogItem,
+    IncomeHeadCatalogResponse,
+    IncomeHeadMappingItem,
     MasterDocTypeCreateRequest,
     MasterDocTypeListResponse,
     MasterDocTypeResponse,
@@ -48,25 +52,125 @@ router = APIRouter()
 
 
 # ═══════════════════════════════════════════════════════════════
-# MASTER DOCUMENT TYPES (Partner Only)
+# MASTER DOCUMENT TYPES (Manager / Partner)
 # ═══════════════════════════════════════════════════════════════
+
+
+def _serialize_doc_type(doc_type: MasterDocumentType) -> MasterDocTypeResponse:
+    """Build a response with eagerly-loaded income_head_mappings."""
+    mappings = [
+        IncomeHeadMappingItem(
+            income_head=m.income_head,
+            sub_category=m.sub_category,
+        )
+        for m in (doc_type.income_head_mappings or [])
+    ]
+    return MasterDocTypeResponse(
+        id=doc_type.id,
+        name=doc_type.name,
+        description=doc_type.description,
+        is_active=doc_type.is_active,
+        display_order=doc_type.display_order,
+        created_at=doc_type.created_at,
+        income_head_mappings=mappings,
+    )
+
+
+async def _replace_mappings(
+    db: AsyncSession,
+    doc_type_id: UUID,
+    mappings: list[IncomeHeadMappingItem],
+) -> None:
+    """Delete existing mappings for a doc type and recreate from list (full-replace)."""
+    from sqlalchemy import delete as sql_delete
+
+    await db.execute(
+        sql_delete(MasterDocTypeIncomeHead).where(
+            MasterDocTypeIncomeHead.doc_type_id == doc_type_id
+        )
+    )
+
+    seen: set[IncomeHeadCategory] = set()
+    for m in mappings:
+        if m.income_head in seen:
+            continue  # silently dedupe
+        seen.add(m.income_head)
+        db.add(
+            MasterDocTypeIncomeHead(
+                doc_type_id=doc_type_id,
+                income_head=m.income_head,
+                sub_category=m.sub_category,
+            )
+        )
+    await db.flush()
+
+
+@router.get("/income-heads/catalog", response_model=IncomeHeadCatalogResponse)
+async def income_head_catalog(
+    current_user: User = Depends(get_current_user),
+):
+    """Static catalog of all income head categories (11 values incl. OTHERS)."""
+    items = [
+        IncomeHeadCatalogItem(value=head, label=INCOME_HEAD_LABELS[head])
+        for head in IncomeHeadCategory
+    ]
+    return IncomeHeadCatalogResponse(items=items)
 
 
 @router.get("/types", response_model=MasterDocTypeListResponse)
 async def list_document_types(
     include_inactive: bool = Query(False),
+    income_head: Optional[IncomeHeadCategory] = Query(None, description="Filter by income head"),
+    sub_category: Optional[DocSubCategory] = Query(None, description="Filter by sub-category"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all document types from master list."""
+    """List all document types from master list, with optional income-head/sub-category filters."""
     query = select(MasterDocumentType)
     if not include_inactive:
         query = query.where(MasterDocumentType.is_active == True)
+
+    if income_head is not None or sub_category is not None:
+        join_q = select(MasterDocTypeIncomeHead.doc_type_id).distinct()
+        if income_head is not None:
+            join_q = join_q.where(MasterDocTypeIncomeHead.income_head == income_head)
+        if sub_category is not None:
+            join_q = join_q.where(MasterDocTypeIncomeHead.sub_category == sub_category)
+        query = query.where(MasterDocumentType.id.in_(join_q))
+
     query = query.order_by(MasterDocumentType.display_order)
     result = await db.execute(query)
-    items = result.scalars().all()
+    items = result.scalars().unique().all()
     return MasterDocTypeListResponse(
-        items=[MasterDocTypeResponse.model_validate(i) for i in items],
+        items=[_serialize_doc_type(i) for i in items],
+        total=len(items),
+    )
+
+
+@router.get("/types/by-income-heads", response_model=MasterDocTypeListResponse)
+async def list_document_types_by_income_heads(
+    heads: list[IncomeHeadCategory] = Query(..., description="Income heads to match"),
+    sub_category: Optional[DocSubCategory] = Query(None),
+    include_inactive: bool = Query(False),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List doc types that map to ANY of the given income heads (optionally filtered by sub-category)."""
+    join_q = select(MasterDocTypeIncomeHead.doc_type_id).distinct().where(
+        MasterDocTypeIncomeHead.income_head.in_(heads)
+    )
+    if sub_category is not None:
+        join_q = join_q.where(MasterDocTypeIncomeHead.sub_category == sub_category)
+
+    query = select(MasterDocumentType).where(MasterDocumentType.id.in_(join_q))
+    if not include_inactive:
+        query = query.where(MasterDocumentType.is_active == True)
+    query = query.order_by(MasterDocumentType.display_order)
+
+    result = await db.execute(query)
+    items = result.scalars().unique().all()
+    return MasterDocTypeListResponse(
+        items=[_serialize_doc_type(i) for i in items],
         total=len(items),
     )
 
@@ -85,18 +189,29 @@ async def create_document_type(
         created_by=current_user.id,
     )
     db.add(doc_type)
+    await db.flush()  # need doc_type.id for mappings
+
+    if body.income_head_mappings:
+        await _replace_mappings(db, doc_type.id, body.income_head_mappings)
 
     await record_audit_event(
         db=db,
         event_type=AuditEventType.MASTER_DOC_TYPE_ADDED,
         actor_id=current_user.id,
-        details={"name": body.name},
+        details={
+            "name": body.name,
+            "income_head_mappings": [
+                {"income_head": m.income_head.value, "sub_category": m.sub_category.value}
+                for m in body.income_head_mappings
+            ],
+        },
     )
 
     await db.flush()
+    await db.refresh(doc_type, attribute_names=["income_head_mappings"])
     from app.core.cache import NS, bump_version
     await bump_version(NS.MASTER_DOC_TYPES)
-    return MasterDocTypeResponse.model_validate(doc_type)
+    return _serialize_doc_type(doc_type)
 
 
 @router.put("/types/{type_id}", response_model=MasterDocTypeResponse)
@@ -106,28 +221,70 @@ async def update_document_type(
     current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a document type (Manager/Partner)."""
+    """Update a document type (Manager/Partner). Pass `income_head_mappings: []` to clear."""
     result = await db.execute(select(MasterDocumentType).where(MasterDocumentType.id == type_id))
     doc_type = result.scalar_one_or_none()
     if not doc_type:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document type not found")
 
     update_data = body.model_dump(exclude_unset=True)
+    mappings_payload = update_data.pop("income_head_mappings", None)
+
     for key, value in update_data.items():
         setattr(doc_type, key, value)
     doc_type.updated_by = current_user.id
+
+    if mappings_payload is not None:
+        # body.income_head_mappings preserves enum types; rebuild from validated body
+        await _replace_mappings(db, doc_type.id, body.income_head_mappings or [])
 
     await record_audit_event(
         db=db,
         event_type=AuditEventType.MASTER_DOC_TYPE_UPDATED,
         actor_id=current_user.id,
-        details={"type_id": str(type_id), "changes": update_data},
+        details={"type_id": str(type_id), "changes": update_data, "mappings_replaced": mappings_payload is not None},
+    )
+
+    await db.flush()
+    await db.refresh(doc_type, attribute_names=["income_head_mappings"])
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.MASTER_DOC_TYPES)
+    return _serialize_doc_type(doc_type)
+
+
+@router.delete("/types/{type_id}", status_code=204)
+async def delete_document_type(
+    type_id: UUID,
+    current_user: User = Depends(get_current_manager_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft-delete a document type by marking it inactive (Manager/Partner).
+
+    Existing FilingDocument rows referencing this type are preserved.
+    """
+    result = await db.execute(select(MasterDocumentType).where(MasterDocumentType.id == type_id))
+    doc_type = result.scalar_one_or_none()
+    if not doc_type:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document type not found")
+
+    if not doc_type.is_active:
+        # Idempotent: already inactive
+        return None
+
+    doc_type.is_active = False
+    doc_type.updated_by = current_user.id
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.MASTER_DOC_TYPE_REMOVED,
+        actor_id=current_user.id,
+        details={"type_id": str(type_id), "name": doc_type.name},
     )
 
     await db.flush()
     from app.core.cache import NS, bump_version
     await bump_version(NS.MASTER_DOC_TYPES)
-    return MasterDocTypeResponse.model_validate(doc_type)
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -268,6 +425,7 @@ async def get_filing_documents(
                 filing_id=doc.filing_id,
                 document_type_id=doc.document_type_id,
                 document_type_name=doc_type.name if doc_type else None,
+                document_type_description=doc_type.description if doc_type else None,
                 status=doc.status,
                 file_id=doc.file_id,
                 original_filename=filename,
@@ -286,15 +444,19 @@ async def get_filing_documents(
     from collections import defaultdict
     groups_map = defaultdict(list)
     type_names = {}
+    type_descriptions: dict = {}
     for item in items:
         groups_map[item.document_type_id].append(item)
         if item.document_type_name:
             type_names[item.document_type_id] = item.document_type_name
+        if item.document_type_description is not None:
+            type_descriptions[item.document_type_id] = item.document_type_description
 
     groups = [
         FilingDocumentGroupResponse(
             document_type_id=type_id,
             document_type_name=type_names.get(type_id, "Unknown"),
+            document_type_description=type_descriptions.get(type_id),
             files=file_list,
         )
         for type_id, file_list in groups_map.items()
@@ -486,6 +648,7 @@ async def confirm_document_upload(
         filing_id=doc.filing_id,
         document_type_id=doc.document_type_id,
         document_type_name=doc_type.name if doc_type else None,
+        document_type_description=doc_type.description if doc_type else None,
         status=doc.status,
         file_id=doc.file_id,
         original_filename=filename,
@@ -543,7 +706,19 @@ async def delete_document(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a document placeholder. Only allowed for PENDING_UPLOAD or UPLOADED status."""
+    """Remove a document placeholder.
+
+    Allowed only when the filing is in DOCUMENT_UPLOAD, PROCESSING, or HALTED.
+
+    Permissions:
+    - **Manager / Executive / Partner**: may remove a placeholder only if it
+      is still PENDING_UPLOAD (empty). Once any file is attached, the
+      placeholder is preserved as a record.
+    - **Client (own filing)**: may remove their own UPLOADED or REJECTED
+      placeholder only — never APPROVED, never an empty PENDING_UPLOAD slot.
+      At least one *other* placeholder of the same document type must still
+      have a file attached (UPLOADED / REJECTED / APPROVED).
+    """
     doc_result = await db.execute(select(FilingDocument).where(FilingDocument.id == document_id))
     doc = doc_result.scalar_one_or_none()
     if not doc:
@@ -551,34 +726,89 @@ async def delete_document(
 
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
     filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
 
     await enforce_filing_access(db, current_user, filing.client_id)
 
-    if doc.status == DocumentStatus.APPROVED:
+    if filing.status not in (
+        FilingStatus.DOCUMENT_UPLOAD,
+        FilingStatus.PROCESSING,
+        FilingStatus.HALTED,
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot delete an approved document",
+            detail=(
+                "Placeholders can only be removed while the filing is in "
+                "DOCUMENT_UPLOAD, PROCESSING, or HALTED state."
+            ),
         )
 
-    # Ensure at least 1 placeholder per document type remains
-    count_result = await db.execute(
-        select(FilingDocument)
-        .where(
-            FilingDocument.filing_id == doc.filing_id,
-            FilingDocument.document_type_id == doc.document_type_id,
+    is_client = current_user.role == UserRole.CLIENT
+    is_staff = current_user.role in (UserRole.MANAGER, UserRole.EXECUTIVE, UserRole.PARTNER)
+
+    if is_staff:
+        # Staff may only remove empty placeholders.
+        if doc.status != DocumentStatus.PENDING_UPLOAD:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot remove a placeholder that already has an uploaded file.",
+            )
+    elif is_client:
+        # Client may only remove their own non-approved uploads, never empty slots.
+        if doc.status not in (DocumentStatus.UPLOADED, DocumentStatus.REJECTED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="You can only remove an extra file you uploaded that has not been approved.",
+            )
+
+        # Ensure at least one OTHER placeholder of the same type still has a file attached.
+        siblings_result = await db.execute(
+            select(FilingDocument).where(
+                FilingDocument.filing_id == doc.filing_id,
+                FilingDocument.document_type_id == doc.document_type_id,
+                FilingDocument.id != doc.id,
+            )
         )
-    )
-    same_type_docs = count_result.scalars().all()
-    if len(same_type_docs) <= 1:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot delete the last document of this type. At least one placeholder per type is required.",
+        sibling_docs = siblings_result.scalars().all()
+        sibling_with_file_exists = any(
+            s.status in (DocumentStatus.UPLOADED, DocumentStatus.REJECTED, DocumentStatus.APPROVED)
+            for s in sibling_docs
         )
+        if not sibling_with_file_exists:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "At least one uploaded file must remain for this document type. "
+                    "Upload another file before removing this one."
+                ),
+            )
+    else:
+        # Defensive: any other role (e.g. DASHBOARD_USER) is rejected.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+
+    document_type_id = doc.document_type_id
+    filing_id = doc.filing_id
+    prev_status = doc.status.value
 
     await db.delete(doc)
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.DOCUMENT_PLACEHOLDER_REMOVED,
+        actor_id=current_user.id,
+        filing_id=filing_id,
+        document_id=document_id,
+        details={
+            "document_type_id": str(document_type_id),
+            "previous_status": prev_status,
+            "removed_by_role": current_user.role.value,
+        },
+    )
+
     await db.commit()
 
-    return {"message": "Document deleted successfully"}
+    return {"message": "Document placeholder removed"}
 
 
 # ═══════════════════════════════════════════════════════════════

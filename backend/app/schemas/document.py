@@ -6,7 +6,24 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.enums import DocumentStatus
+from app.enums import DocSubCategory, DocumentStatus, IncomeHeadCategory
+
+
+# ─── Income-Head Mapping (per doc-type ↔ income-head) ───────
+class IncomeHeadMappingItem(BaseModel):
+    income_head: IncomeHeadCategory
+    sub_category: DocSubCategory = DocSubCategory.INCREMENTAL
+
+    model_config = {"from_attributes": True}
+
+
+class IncomeHeadCatalogItem(BaseModel):
+    value: IncomeHeadCategory
+    label: str
+
+
+class IncomeHeadCatalogResponse(BaseModel):
+    items: list[IncomeHeadCatalogItem]
 
 
 # ─── Master Document Type ────────────────────────────────────
@@ -14,6 +31,7 @@ class MasterDocTypeCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     display_order: int = 0
+    income_head_mappings: list[IncomeHeadMappingItem] = Field(default_factory=list)
 
 
 class MasterDocTypeUpdateRequest(BaseModel):
@@ -21,6 +39,8 @@ class MasterDocTypeUpdateRequest(BaseModel):
     description: Optional[str] = None
     display_order: Optional[int] = None
     is_active: Optional[bool] = None
+    # Full-replace if provided. Pass [] to clear (doc becomes OTHERS-only).
+    income_head_mappings: Optional[list[IncomeHeadMappingItem]] = None
 
 
 class MasterDocTypeResponse(BaseModel):
@@ -30,6 +50,7 @@ class MasterDocTypeResponse(BaseModel):
     is_active: bool
     display_order: int
     created_at: datetime
+    income_head_mappings: list[IncomeHeadMappingItem] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -49,6 +70,7 @@ class FilingDocumentResponse(BaseModel):
     filing_id: UUID
     document_type_id: UUID
     document_type_name: Optional[str] = None
+    document_type_description: Optional[str] = None
     status: DocumentStatus
     file_id: Optional[UUID] = None
     original_filename: Optional[str] = None
@@ -65,6 +87,7 @@ class FilingDocumentGroupResponse(BaseModel):
     """Documents grouped by type — each type may have multiple files."""
     document_type_id: UUID
     document_type_name: str
+    document_type_description: Optional[str] = None
     files: list[FilingDocumentResponse]
 
 
