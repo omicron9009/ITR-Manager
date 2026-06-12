@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from app.enums import TextFieldStatus
+from app.schemas.document import IncomeHeadMappingItem
 
 
 # ─── Master Text Field Type ─────────────────────────────────
@@ -15,6 +16,7 @@ class MasterTextFieldTypeCreateRequest(BaseModel):
     description: Optional[str] = None
     max_length: int = Field(200, ge=1, le=2000)
     display_order: int = 0
+    income_head_mappings: list[IncomeHeadMappingItem] = Field(default_factory=list)
 
 
 class MasterTextFieldTypeUpdateRequest(BaseModel):
@@ -23,6 +25,8 @@ class MasterTextFieldTypeUpdateRequest(BaseModel):
     max_length: Optional[int] = Field(None, ge=1, le=2000)
     display_order: Optional[int] = None
     is_active: Optional[bool] = None
+    # Full-replace if provided. Pass [] to clear (type becomes OTHERS-only).
+    income_head_mappings: Optional[list[IncomeHeadMappingItem]] = None
 
 
 class MasterTextFieldTypeResponse(BaseModel):
@@ -33,6 +37,7 @@ class MasterTextFieldTypeResponse(BaseModel):
     is_active: bool
     display_order: int
     created_at: datetime
+    income_head_mappings: list[IncomeHeadMappingItem] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

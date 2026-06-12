@@ -1,0 +1,305 @@
+networks:
+  ingress_network:
+    name: itr-frontend-bridge
+  internal_network:
+    name: itr-internal-bridge
+
+
+services:
+  # ═══════════════════════════════════════════════════════════════
+  # DATA LAYER
+  # ═══════════════════════════════════════════════════════════════
+  postgres:
+    image: postgres:16-alpine
+    container_name: itr-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - F:\PlatformData\postgres:/var/lib/postgresql/data
+    networks:
+      - internal_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 4gb
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: itr-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - F:\PlatformData\minio:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.minio.rule=Host(`storage.workpartners.co.in`)"
+      - "traefik.http.routers.minio.entrypoints=web"
+      - "traefik.http.routers.minio.middlewares=minio-cors@docker,minio-ratelimit@docker"
+      - "traefik.http.services.minio.loadbalancer.server.port=9000"
+      - "traefik.http.middlewares.minio-cors.headers.accesscontrolalloworiginlist=https://workpartners.co.in,http://localhost:3000,https://aikar.workpartners.co.in"
+      - "traefik.http.middlewares.minio-cors.headers.accesscontrolallowmethods=GET,PUT,HEAD,OPTIONS"
+      - "traefik.http.middlewares.minio-cors.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.minio-cors.headers.accesscontrolmaxage=3600"
+      - "traefik.http.middlewares.minio-cors.headers.addvaryheader=true"
+      - "traefik.http.middlewares.minio-ratelimit.ratelimit.average=50"
+      - "traefik.http.middlewares.minio-ratelimit.ratelimit.burst=100"
+      - "traefik.http.middlewares.minio-ratelimit.ratelimit.sourcecriterion.ipstrategy.depth=1"
+    networks:
+      - ingress_network
+      - internal_network
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2gb
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: itr-redis
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "512mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+    volumes:
+      - F:\PlatformData\redis:/data
+    networks:
+      - internal_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 600mb
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════
+  # INGRESS, ROUTING & SSL LAYER
+  # ═══════════════════════════════════════════════════════════════
+  traefik:
+    image: traefik:v2.11
+    container_name: itr-traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--entrypoints.web.address=:80"
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.addEntryPointsLabels=true"
+    ports:
+      - "8080:80"
+      - "8088:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - ingress_network
+      - internal_network
+    deploy:
+      resources:
+        limits:
+          memory: 512mb
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════
+  # APPLICATION LAYER
+  # ═══════════════════════════════════════════════════════════════
+  backend-api:
+    image: omicron9009/itr-backend:latest
+    container_name: itr-backend-api
+    env_file:
+      - .env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=(Host(`api.workpartners.co.in`) || PathPrefix(`/api`)) && !PathPrefix(`/docs`) && !PathPrefix(`/redoc`) && !Path(`/openapi.json`) && !Path(`/api/v1/openapi.json`)"
+      - "traefik.http.routers.backend.entrypoints=web"
+      - "traefik.http.routers.backend.middlewares=backend-ratelimit@docker"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+      - "traefik.http.routers.backend-docs-block.rule=Host(`api.workpartners.co.in`) && (PathPrefix(`/docs`) || PathPrefix(`/redoc`) || Path(`/openapi.json`) || Path(`/api/v1/openapi.json`))"
+      - "traefik.http.routers.backend-docs-block.entrypoints=web"
+      - "traefik.http.routers.backend-docs-block.middlewares=block-docs@docker"
+      - "traefik.http.routers.backend-docs-block.service=backend@docker"
+      - "traefik.http.routers.backend-docs-block.priority=200"
+      - "traefik.http.middlewares.backend-ratelimit.ratelimit.average=100"
+      - "traefik.http.middlewares.backend-ratelimit.ratelimit.burst=200"
+      - "traefik.http.middlewares.backend-ratelimit.ratelimit.sourcecriterion.ipstrategy.depth=1"
+      - "traefik.http.middlewares.block-docs.ipwhitelist.sourcerange=127.0.0.1/32"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ingress_network
+      - internal_network
+    deploy:
+      resources:
+        limits:
+          memory: 4gb
+    restart: unless-stopped
+
+  frontend-app:
+    image: omicron9009/itr-frontend:latest
+    container_name: itr-frontend-ui
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`aikar.workpartners.co.in`) || Host(`workpartners.co.in`)"
+      - "traefik.http.routers.frontend.entrypoints=web"
+      - "traefik.http.routers.frontend.middlewares=frontend-ratelimit@docker"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.frontend-ratelimit.ratelimit.average=100"
+      - "traefik.http.middlewares.frontend-ratelimit.ratelimit.burst=200"
+      - "traefik.http.middlewares.frontend-ratelimit.ratelimit.sourcecriterion.ipstrategy.depth=1"
+    depends_on:
+      - backend-api
+    networks:
+      - ingress_network
+    deploy:
+      resources:
+        limits:
+          memory: 1gb
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════
+  # CLOUDFLARE TUNNEL
+  # ═══════════════════════════════════════════════════════════════
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: itr-cloudflared
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - ingress_network
+    depends_on:
+      - traefik
+    deploy:
+      resources:
+        limits:
+          memory: 256mb
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════
+  # OBSERVABILITY & METRICS STACK
+  # ═══════════════════════════════════════════════════════════════
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: itr-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - F:\PlatformData\prometheus:/prometheus
+    networks:
+      - internal_network
+      - ingress_network
+    deploy:
+      resources:
+        limits:
+          memory: 2gb
+    restart: unless-stopped
+
+  # ── Loki — log aggregation backend ──────────────────────────
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: itr-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki-config.yml:/etc/loki/local-config.yaml:ro
+      - F:\PlatformData\loki:/loki
+    networks:
+      - internal_network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready | grep -q 'ready' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1gb
+    restart: unless-stopped
+
+  # ── Promtail — ships all container logs to Loki ─────────────
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: itr-promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - F:\PlatformData\promtail:/tmp
+    networks:
+      - internal_network
+    depends_on:
+      loki:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512mb
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: itr-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Auto-install the Loki plugin if not present (10.4.0 ships with it, included for safety)
+      - GF_INSTALL_PLUGINS=
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.localhost`)"
+      - "traefik.http.routers.grafana.entrypoints=web"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+    volumes:
+      - F:\PlatformData\grafana:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "3050:3000"
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - ingress_network
+      - internal_network
+    deploy:
+      resources:
+        limits:
+          memory: 1gb
+    restart: unless-stopped

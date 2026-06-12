@@ -7,10 +7,43 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.enums import AuditEventType, TextFieldStatus
+from app.enums import AuditEventType, DocSubCategory, IncomeHeadCategory, TextFieldStatus
 from app.models.filing_text_field import FilingTextField
 from app.models.master_text_field_type import MasterTextFieldType
+from app.models.master_text_field_type_income_head import MasterTextFieldTypeIncomeHead
 from app.services.audit_service import record_audit_event
+
+
+async def resolve_text_field_types_for_income_heads(
+    db: AsyncSession,
+    heads: list[IncomeHeadCategory],
+    sub_category: Optional[DocSubCategory] = None,
+    only_active: bool = True,
+) -> list[UUID]:
+    """Return master text-field type IDs mapped to ANY of the given income heads.
+
+    Mirror of `resolve_doc_types_for_income_heads`. Optionally filter by
+    sub_category (e.g. BASE) and active flag.
+    """
+    if not heads:
+        return []
+
+    q = (
+        select(MasterTextFieldTypeIncomeHead.text_field_type_id)
+        .where(MasterTextFieldTypeIncomeHead.income_head.in_(heads))
+        .distinct()
+    )
+    if sub_category is not None:
+        q = q.where(MasterTextFieldTypeIncomeHead.sub_category == sub_category)
+
+    if only_active:
+        q = q.join(
+            MasterTextFieldType,
+            MasterTextFieldType.id == MasterTextFieldTypeIncomeHead.text_field_type_id,
+        ).where(MasterTextFieldType.is_active == True)  # noqa: E712
+
+    result = await db.execute(q)
+    return [row for row in result.scalars().all()]
 
 
 async def assign_text_field_placeholders(

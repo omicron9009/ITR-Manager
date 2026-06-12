@@ -269,6 +269,7 @@ class NS:
     EXEC_CLIENTS = "exec_clients"
     PARTNER_CLIENT_IDS = "partner_client_ids"
     MASTER_DOC_TYPES = "master_doc_types"
+    MASTER_TEXT_FIELD_TYPES = "master_text_field_types"
     FORM_FIELDS = "form_fields"
     TAGS = "tags"
     EMAIL_CONFIG = "email_config"

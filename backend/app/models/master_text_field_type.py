@@ -27,3 +27,9 @@ class MasterTextFieldType(Base):
     creator = relationship("User", foreign_keys=[created_by])
     updater = relationship("User", foreign_keys=[updated_by])
     filing_text_fields = relationship("FilingTextField", back_populates="field_type")
+    income_head_mappings = relationship(
+        "MasterTextFieldTypeIncomeHead",
+        back_populates="text_field_type",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )

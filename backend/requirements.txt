@@ -41,6 +41,9 @@ fpdf2==2.8.1
 prometheus-fastapi-instrumentator>=7.0.0
 prometheus-client>=0.20.0
 
+# Structured logging (for Loki ingestion)
+python-json-logger>=2.0.7
+
 # Cache
 redis[hiredis]>=5.0.4
 cachetools>=5.3.3

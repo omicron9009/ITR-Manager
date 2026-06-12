@@ -1,11 +1,15 @@
 """ITR Filing Platform — FastAPI Application."""
 
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+from pythonjsonlogger import jsonlogger
 
 from app.api.v1.router import api_router
 from app.config import settings
@@ -15,13 +19,29 @@ import sys
 
 from prometheus_fastapi_instrumentator import Instrumentator # type: ignore
 
-logging.basicConfig(
-    stream=sys.stdout, 
-    level=logging.DEBUG,
-    format='%(levelname)s: %(message)s'
+# ── Structured JSON logging (Loki-friendly) ─────────────────────
+# Emits one JSON line per record with stable field names so Loki can
+# parse with `| json` and filter on `level`, `status_code`, `path`, etc.
+_log_handler = logging.StreamHandler(sys.stdout)
+_log_handler.setFormatter(
+    jsonlogger.JsonFormatter(
+        "%(asctime)s %(levelname)s %(name)s %(message)s",
+        rename_fields={"asctime": "timestamp", "levelname": "level", "name": "logger"},
+    )
 )
+# Wipe any handlers basicConfig may have installed, then attach JSON one.
+_root_logger = logging.getLogger()
+_root_logger.handlers.clear()
+_root_logger.addHandler(_log_handler)
+_root_logger.setLevel(logging.INFO)
+
+# Application logger
 logger = logging.getLogger("app")
 logger.setLevel(logging.DEBUG)
+
+# Quiet down noisy libraries (keep WARNING+)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
 
 
@@ -79,6 +99,60 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Request-scoped logging middleware ──────────────────────────
+# Tags every request with a UUID, logs duration, and ERROR-logs any 5xx
+# response so they're easily filterable in Loki via `level="ERROR"`.
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Re-raised; the global exception_handler below will log + format the response
+        raise
+    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    log_extra = {
+        "request_id": request_id,
+        "method": request.method,
+        "path": request.url.path,
+        "status_code": response.status_code,
+        "duration_ms": duration_ms,
+        "client_ip": request.client.host if request.client else None,
+    }
+    if response.status_code >= 500:
+        logger.error("http_5xx_response", extra=log_extra)
+    elif response.status_code >= 400:
+        logger.warning("http_4xx_response", extra=log_extra)
+    response.headers["x-request-id"] = request_id
+    return response
+
+
+# ── Global exception handler ───────────────────────────────────
+# Catches anything not handled by FastAPI's built-in HTTPException flow.
+# Emits a structured ERROR log line (with traceback) for Loki.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    logger.exception(
+        "unhandled_exception",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": 500,
+            "client_ip": request.client.host if request.client else None,
+            "exception_type": type(exc).__name__,
+        },
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "request_id": request_id},
+        headers={"x-request-id": request_id},
+    )
+
 
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)

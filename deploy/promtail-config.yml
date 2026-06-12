@@ -1,0 +1,89 @@
+# Promtail — ships container stdout/stderr to Loki.
+# Uses Docker Service Discovery so every container running on this host is auto-picked-up.
+# Docs: https://grafana.com/docs/loki/latest/clients/promtail/configuration/
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://itr-loki:3100/loki/api/v1/push
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  # ── Docker container logs (all containers on this host) ──
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+
+    relabel_configs:
+      # Container name → `container` label (strip leading "/")
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+
+      # Compose service name → `service` label (more stable than container name)
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+
+      # Compose project name → `project` label
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'project'
+
+      # Image name → `image` label
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+
+      # Static job label so dashboards can pin to "job=docker"
+      - target_label: 'job'
+        replacement: 'docker'
+
+    pipeline_stages:
+      # 1. Detect JSON payload (backend emits structured JSON via python-json-logger).
+      #    If parse succeeds, hoist `level`, `status_code`, `path`, `method`, etc.
+      - json:
+          expressions:
+            level:        level
+            logger:       logger
+            message:      message
+            timestamp:    timestamp
+            request_id:   request_id
+            method:       method
+            path:         path
+            status_code:  status_code
+            duration_ms:  duration_ms
+            exception_type: exception_type
+
+      # 2. Promote `level` and `status_code` to indexed labels so LogQL filtering
+      #    on `{level="ERROR"}` / `{status_code=~"5.."}` is fast.
+      #    (Only labels of low cardinality should be promoted.)
+      - labels:
+          level:
+          status_code:
+
+      # 3. Use the JSON `timestamp` (when present) as the log time.
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          fallback_formats:
+            - RFC3339
+            - "2006-01-02T15:04:05.000000"
+          action_on_failure: skip
+
+      # 4. Fallback regex for non-JSON lines (e.g. uvicorn startup banner,
+      #    postgres "LOG: database system is ready"). Tags level only.
+      - match:
+          selector: '{service=~".+"} !~ "^\\s*\\{"'
+          stages:
+            - regex:
+                expression: '^(?P<level>[A-Z]{3,8})[: ]'
+            - labels:
+                level:
