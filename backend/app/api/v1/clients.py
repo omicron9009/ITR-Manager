@@ -287,6 +287,10 @@ async def list_clients(
         False,
         description="Only ACTIVE clients who submitted onboarding but have not initiated any filing",
     ),
+    activated_not_onboarded: bool = Query(
+        False,
+        description="Only ACTIVE clients who have NOT yet submitted the onboarding form",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -304,13 +308,12 @@ async def list_clients(
         from fastapi import HTTPException, status
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    # When onboarded_pending_filing is requested, force account_status=ACTIVE
-    # (a non-ACTIVE client cannot meaningfully be "onboarded & pending filing").
-    if onboarded_pending_filing:
+    # Either pending-filing flag implies the client is ACTIVE; force the predicate.
+    if onboarded_pending_filing or activated_not_onboarded:
         account_status = AccountStatus.ACTIVE
 
     # Cache key encodes the full filter + user scope
-    cache_key = f"{current_user.id}:{page}:{page_size}:{search}:{account_status}:{financial_year}:{partner_tag_id}:{onboarded_pending_filing}"
+    cache_key = f"{current_user.id}:{page}:{page_size}:{search}:{account_status}:{financial_year}:{partner_tag_id}:{onboarded_pending_filing}:{activated_not_onboarded}"
     cached = await cache_get(NS.CLIENT_LIST, cache_key)
     if cached is not _MISS:
         return cached
@@ -374,6 +377,18 @@ async def list_clients(
             User.id.in_(submitted_sub),
             User.id.notin_(no_filing_sub),
         )
+
+    # Activated-but-not-onboarded filter:
+    #   1) account_status already forced to ACTIVE above
+    #   2) form_submitted_at IS NULL (either no profile row, or row exists with NULL)
+    # No need for an explicit no-filing check: filing initiation is blocked
+    # backend-side unless form_submitted_at is set, so these clients implicitly
+    # have no filings.
+    if activated_not_onboarded:
+        submitted_sub = select(ClientProfile.user_id).where(
+            ClientProfile.form_submitted_at.isnot(None)
+        ).scalar_subquery()
+        query = query.where(User.id.notin_(submitted_sub))
 
     # Count
     count_query = select(func.count()).select_from(query.subquery())
@@ -442,15 +457,22 @@ async def list_clients(
     for cid, fy, st in filings_result.all():
         filings_by_client.setdefault(cid, []).append((fy, st))
 
-    # ── Batch-fetch partner tags for the page ──
+    # ── Batch-fetch partner tags AND onboarding-submission timestamps for the page ──
+    # Single query against client_profiles for both pieces of data.
     from app.models.tag import Tag
-    profile_tag_result = await db.execute(
-        select(ClientProfile.user_id, ClientProfile.partner_tag_id).where(
-            ClientProfile.user_id.in_(user_ids),
-            ClientProfile.partner_tag_id.isnot(None),
-        )
+    profile_rows_result = await db.execute(
+        select(
+            ClientProfile.user_id,
+            ClientProfile.partner_tag_id,
+            ClientProfile.form_submitted_at,
+        ).where(ClientProfile.user_id.in_(user_ids))
     )
-    partner_tag_by_client = {row[0]: row[1] for row in profile_tag_result.all()}
+    partner_tag_by_client: dict = {}
+    form_submitted_by_client: dict = {}
+    for row_user_id, row_tag_id, row_form_submitted in profile_rows_result.all():
+        if row_tag_id is not None:
+            partner_tag_by_client[row_user_id] = row_tag_id
+        form_submitted_by_client[row_user_id] = row_form_submitted
     tag_ids = list(set(partner_tag_by_client.values()))
     tag_name_by_id: dict = {}
     if tag_ids:
@@ -496,6 +518,7 @@ async def list_clients(
                 active_filing_years=active_years,
                 current_state=current_state,
                 last_updated=user.updated_at,
+                form_submitted_at=form_submitted_by_client.get(user.id),
             )
         )
 
