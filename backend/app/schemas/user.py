@@ -256,6 +256,8 @@ class ClientListItem(BaseModel):
     active_filing_years: list[str] = []
     current_state: Optional[str] = None
     last_updated: Optional[datetime] = None
+    # Onboarding-form submission timestamp (null = client hasn't submitted the form yet)
+    form_submitted_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
