@@ -283,6 +283,10 @@ async def list_clients(
     account_status: Optional[AccountStatus] = Query(None),
     financial_year: Optional[str] = Query(None),
     partner_tag_id: Optional[UUID] = Query(None, description="Filter by partner tag"),
+    onboarded_pending_filing: bool = Query(
+        False,
+        description="Only ACTIVE clients who submitted onboarding but have not initiated any filing",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -300,8 +304,13 @@ async def list_clients(
         from fastapi import HTTPException, status
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
+    # When onboarded_pending_filing is requested, force account_status=ACTIVE
+    # (a non-ACTIVE client cannot meaningfully be "onboarded & pending filing").
+    if onboarded_pending_filing:
+        account_status = AccountStatus.ACTIVE
+
     # Cache key encodes the full filter + user scope
-    cache_key = f"{current_user.id}:{page}:{page_size}:{search}:{account_status}:{financial_year}:{partner_tag_id}"
+    cache_key = f"{current_user.id}:{page}:{page_size}:{search}:{account_status}:{financial_year}:{partner_tag_id}:{onboarded_pending_filing}"
     cached = await cache_get(NS.CLIENT_LIST, cache_key)
     if cached is not _MISS:
         return cached
@@ -351,6 +360,20 @@ async def list_clients(
             ClientProfile.partner_tag_id == partner_tag_id
         ).scalar_subquery()
         query = query.where(User.id.in_(pt_sub))
+
+    # Onboarded-but-no-filing filter:
+    #   1) account_status already forced to ACTIVE above
+    #   2) form_submitted_at must be set (onboarding submitted)
+    #   3) NOT EXISTS any itr_filings row for this client (anti-join on indexed FK)
+    if onboarded_pending_filing:
+        submitted_sub = select(ClientProfile.user_id).where(
+            ClientProfile.form_submitted_at.isnot(None)
+        ).scalar_subquery()
+        no_filing_sub = select(ITRFiling.client_id).scalar_subquery()
+        query = query.where(
+            User.id.in_(submitted_sub),
+            User.id.notin_(no_filing_sub),
+        )
 
     # Count
     count_query = select(func.count()).select_from(query.subquery())

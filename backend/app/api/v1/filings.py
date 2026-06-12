@@ -15,6 +15,7 @@ from app.enums import AccountStatus, AuditEventType, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
 from app.models.filing import ITRFiling
 from app.models.filing_state_history import FilingStateHistory
+from app.models.filing_text_field import FilingTextField
 from app.models.user import User
 from app.schemas.filing import (
     ConfirmIncomeHeadsRequest,
@@ -357,6 +358,42 @@ async def confirm_income_heads(
         )
         assigned_count = len(placeholders)
 
+    # 5b. Auto-assign BASE text-field placeholders for the selected income heads
+    from app.services.text_field_service import (
+        assign_text_field_placeholders,
+        resolve_text_field_types_for_income_heads,
+    )
+
+    base_text_field_type_ids = await resolve_text_field_types_for_income_heads(
+        db=db,
+        heads=selected_heads,
+        sub_category=DocSubCategory.BASE,
+        only_active=True,
+    )
+    text_fields_assigned_count = 0
+    if base_text_field_type_ids:
+        # `assign_text_field_placeholders` is idempotent (skips types that already
+        # have at least one placeholder). Measure delta via before/after count.
+        before = await db.execute(
+            select(func.count()).select_from(FilingTextField).where(
+                FilingTextField.filing_id == filing.id
+            )
+        )
+        before_count = before.scalar() or 0
+        await assign_text_field_placeholders(
+            db=db,
+            filing_id=filing.id,
+            field_type_ids=base_text_field_type_ids,
+            assigned_by=current_user.id,
+        )
+        after = await db.execute(
+            select(func.count()).select_from(FilingTextField).where(
+                FilingTextField.filing_id == filing.id
+            )
+        )
+        after_count = after.scalar() or 0
+        text_fields_assigned_count = max(0, after_count - before_count)
+
     # 6. Transition INITIATED -> DOCUMENT_UPLOAD only if manager + executive are assigned
     transitioned_to: Optional[FilingStatus] = None
     if filing.status == FilingStatus.INITIATED:
@@ -399,6 +436,7 @@ async def confirm_income_heads(
         details={
             "selected_heads": [h.value for h in selected_heads],
             "base_documents_assigned": assigned_count,
+            "base_text_fields_assigned": text_fields_assigned_count,
             "auto_transitioned": transitioned_to.value if transitioned_to else None,
         },
         ip_address=request.client.host if request.client else None,

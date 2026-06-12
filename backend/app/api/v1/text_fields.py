@@ -15,11 +15,13 @@ from app.core.security import (
     get_current_user,
 )
 from app.database import get_db
-from app.enums import AuditEventType, FilingStatus, TextFieldStatus, UserRole
+from app.enums import AuditEventType, DocSubCategory, FilingStatus, IncomeHeadCategory, TextFieldStatus, UserRole
 from app.models.filing import ITRFiling
 from app.models.filing_text_field import FilingTextField
 from app.models.master_text_field_type import MasterTextFieldType
+from app.models.master_text_field_type_income_head import MasterTextFieldTypeIncomeHead
 from app.models.user import User
+from app.schemas.document import IncomeHeadMappingItem
 from app.schemas.text_field import (
     FilingTextFieldGroupResponse,
     FilingTextFieldListResponse,
@@ -68,21 +70,85 @@ def _ensure_filing_state_open(filing: ITRFiling) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 
+def _serialize_type(field_type: MasterTextFieldType) -> MasterTextFieldTypeResponse:
+    """Build response with eagerly-loaded income_head_mappings (matches doc-type pattern)."""
+    mappings = [
+        IncomeHeadMappingItem(
+            income_head=m.income_head,
+            sub_category=m.sub_category,
+        )
+        for m in (field_type.income_head_mappings or [])
+    ]
+    return MasterTextFieldTypeResponse(
+        id=field_type.id,
+        name=field_type.name,
+        description=field_type.description,
+        max_length=field_type.max_length,
+        is_active=field_type.is_active,
+        display_order=field_type.display_order,
+        created_at=field_type.created_at,
+        income_head_mappings=mappings,
+    )
+
+
+async def _replace_text_field_mappings(
+    db: AsyncSession,
+    text_field_type_id: UUID,
+    mappings: list[IncomeHeadMappingItem],
+) -> None:
+    """Delete existing mappings and recreate from list (full-replace).
+
+    Mirror of `_replace_mappings` in documents.py.
+    """
+    from sqlalchemy import delete as sql_delete
+
+    await db.execute(
+        sql_delete(MasterTextFieldTypeIncomeHead).where(
+            MasterTextFieldTypeIncomeHead.text_field_type_id == text_field_type_id
+        )
+    )
+
+    seen: set[IncomeHeadCategory] = set()
+    for m in mappings:
+        if m.income_head in seen:
+            continue  # silently dedupe
+        seen.add(m.income_head)
+        db.add(
+            MasterTextFieldTypeIncomeHead(
+                text_field_type_id=text_field_type_id,
+                income_head=m.income_head,
+                sub_category=m.sub_category,
+            )
+        )
+    await db.flush()
+
+
 @router.get("/types", response_model=MasterTextFieldTypeListResponse)
 async def list_text_field_types(
     include_inactive: bool = Query(False),
+    income_head: Optional[IncomeHeadCategory] = Query(None, description="Filter by income head"),
+    sub_category: Optional[DocSubCategory] = Query(None, description="Filter by sub-category"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all master text-field types."""
+    """List all master text-field types, with optional income-head/sub-category filters."""
     query = select(MasterTextFieldType)
     if not include_inactive:
         query = query.where(MasterTextFieldType.is_active == True)  # noqa: E712
+
+    if income_head is not None or sub_category is not None:
+        join_q = select(MasterTextFieldTypeIncomeHead.text_field_type_id).distinct()
+        if income_head is not None:
+            join_q = join_q.where(MasterTextFieldTypeIncomeHead.income_head == income_head)
+        if sub_category is not None:
+            join_q = join_q.where(MasterTextFieldTypeIncomeHead.sub_category == sub_category)
+        query = query.where(MasterTextFieldType.id.in_(join_q))
+
     query = query.order_by(MasterTextFieldType.display_order, MasterTextFieldType.name)
     result = await db.execute(query)
-    items = result.scalars().all()
+    items = result.scalars().unique().all()
     return MasterTextFieldTypeListResponse(
-        items=[MasterTextFieldTypeResponse.model_validate(i) for i in items],
+        items=[_serialize_type(i) for i in items],
         total=len(items),
     )
 
@@ -93,7 +159,7 @@ async def create_text_field_type(
     current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a master text-field type (Manager/Partner)."""
+    """Create a master text-field type (Manager/Partner). Accepts optional income-head mappings."""
     # Uniqueness pre-check (DB also enforces it)
     existing = await db.execute(
         select(MasterTextFieldType).where(MasterTextFieldType.name == body.name)
@@ -112,17 +178,31 @@ async def create_text_field_type(
         created_by=current_user.id,
     )
     db.add(field_type)
-    await db.flush()
+    await db.flush()  # need field_type.id for mappings
+
+    if body.income_head_mappings:
+        await _replace_text_field_mappings(db, field_type.id, body.income_head_mappings)
 
     await record_audit_event(
         db=db,
         event_type=AuditEventType.TEXT_FIELD_TYPE_ADDED,
         actor_id=current_user.id,
-        details={"name": body.name, "max_length": body.max_length},
+        details={
+            "name": body.name,
+            "max_length": body.max_length,
+            "income_head_mappings": [
+                {"income_head": m.income_head.value, "sub_category": m.sub_category.value}
+                for m in body.income_head_mappings
+            ],
+        },
     )
 
+    await db.flush()
+    await db.refresh(field_type, attribute_names=["income_head_mappings"])
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.MASTER_TEXT_FIELD_TYPES)
     await db.commit()
-    return MasterTextFieldTypeResponse.model_validate(field_type)
+    return _serialize_type(field_type)
 
 
 @router.put("/types/{type_id}", response_model=MasterTextFieldTypeResponse)
@@ -132,7 +212,7 @@ async def update_text_field_type(
     current_user: User = Depends(get_current_manager_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a master text-field type (Manager/Partner)."""
+    """Update a master text-field type (Manager/Partner). Pass `income_head_mappings: []` to clear."""
     result = await db.execute(
         select(MasterTextFieldType).where(MasterTextFieldType.id == type_id)
     )
@@ -141,19 +221,33 @@ async def update_text_field_type(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Text field type not found")
 
     update_data = body.model_dump(exclude_unset=True)
+    mappings_payload = update_data.pop("income_head_mappings", None)
+
     for key, value in update_data.items():
         setattr(field_type, key, value)
     field_type.updated_by = current_user.id
+
+    if mappings_payload is not None:
+        # body.income_head_mappings preserves enum types; rebuild from validated body
+        await _replace_text_field_mappings(db, field_type.id, body.income_head_mappings or [])
 
     await record_audit_event(
         db=db,
         event_type=AuditEventType.TEXT_FIELD_TYPE_UPDATED,
         actor_id=current_user.id,
-        details={"type_id": str(type_id), "changes": update_data},
+        details={
+            "type_id": str(type_id),
+            "changes": update_data,
+            "mappings_replaced": mappings_payload is not None,
+        },
     )
 
+    await db.flush()
+    await db.refresh(field_type, attribute_names=["income_head_mappings"])
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.MASTER_TEXT_FIELD_TYPES)
     await db.commit()
-    return MasterTextFieldTypeResponse.model_validate(field_type)
+    return _serialize_type(field_type)
 
 
 @router.delete("/types/{type_id}", status_code=204)
@@ -183,6 +277,8 @@ async def delete_text_field_type(
         details={"type_id": str(type_id), "name": field_type.name},
     )
 
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.MASTER_TEXT_FIELD_TYPES)
     await db.commit()
     return None
 
