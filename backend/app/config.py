@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "CHANGE-ME-TO-A-RANDOM-SECRET"
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    # Long-lived token for DASHBOARD_USER role (read-only TV/kiosk dashboards).
+    # Default: 30 days (60 * 24 * 30 = 43,200 minutes). Override via env if needed.
+    JWT_DASHBOARD_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 30
 
     # Admin seed (created on first startup)
     ADMIN_EMAIL: str = "admin@itr-platform.com"
