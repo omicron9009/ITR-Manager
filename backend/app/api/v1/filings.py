@@ -712,11 +712,14 @@ async def get_filing(
         if exec_user:
             exec_name = exec_user.full_name
 
-    # Check if internal working docs exist for this filing
+    # Check if internal working docs exist for this filing (active only — exclude superseded versions)
     from app.models.internal_working_doc import InternalWorkingDoc
     iw_count = await db.scalar(
         select(func.count()).select_from(InternalWorkingDoc)
-        .where(InternalWorkingDoc.filing_id == filing.id)
+        .where(
+            InternalWorkingDoc.filing_id == filing.id,
+            InternalWorkingDoc.superseded_at.is_(None),
+        )
     )
 
     # Compute "pending_executive_assignment" — true when the filing has no

@@ -1,4 +1,10 @@
-"""Model: internal_working_docs — Internal working documents uploaded during computation phase."""
+"""Model: internal_working_docs — Internal working documents uploaded during computation phase.
+
+Supports versioning via "replace" semantics:
+- ``replaces_id`` points to the older row this row supersedes (NULL on first upload).
+- ``superseded_at`` is set on the OLD row when it is replaced; active rows have NULL.
+- On replace, the old MinIO object is preserved (no S3 delete) so history is recoverable.
+"""
 
 import uuid
 from datetime import datetime
@@ -21,7 +27,18 @@ class InternalWorkingDoc(Base):
     uploaded_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
+    # ── Versioning fields ──────────────────────────────────────
+    # New row points back to the older row it replaces (NULL = original upload)
+    replaces_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("internal_working_docs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Set on the OLD row when it is replaced. NULL = active.
+    superseded_at = Column(DateTime(timezone=True), nullable=True)
+
     # Relationships
     filing = relationship("ITRFiling", back_populates="internal_working_docs")
     file = relationship("StoredFile", foreign_keys=[file_id])
     uploader = relationship("User", foreign_keys=[uploaded_by])
+    replaces = relationship("InternalWorkingDoc", remote_side=[id], foreign_keys=[replaces_id])
