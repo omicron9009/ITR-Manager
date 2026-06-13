@@ -436,6 +436,9 @@ async def _sync_new_columns():
         ("client_profiles", "partner_tag_id", "UUID", None),
         # Any Other income head description
         ("client_income_heads", "any_other_text", "VARCHAR(255)", None),
+        # Internal working doc versioning (replace-without-delete)
+        ("internal_working_docs", "replaces_id", "UUID", None),
+        ("internal_working_docs", "superseded_at", "TIMESTAMPTZ", None),
     ]
 
     try:
@@ -584,13 +587,37 @@ async def _sync_new_columns():
                         label VARCHAR(255),
                         uploaded_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
                         uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        replaces_id UUID REFERENCES internal_working_docs(id) ON DELETE SET NULL,
+                        superseded_at TIMESTAMPTZ
                     )
                 """)
                 await conn.execute(
                     'CREATE INDEX "ix_internal_working_docs_filing_id" ON "internal_working_docs" ("filing_id")'
                 )
                 logger.info("Created table 'internal_working_docs'")
+
+            # Ensure self-referencing FK on internal_working_docs.replaces_id (existing deployments)
+            iw_fk_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.table_constraints "
+                "WHERE constraint_name = 'fk_internal_working_docs_replaces_id' "
+                "AND table_name = 'internal_working_docs'"
+            )
+            if not iw_fk_exists:
+                replaces_col_exists = await conn.fetchval(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'internal_working_docs' AND column_name = 'replaces_id'"
+                )
+                if replaces_col_exists:
+                    try:
+                        await conn.execute(
+                            'ALTER TABLE "internal_working_docs" '
+                            'ADD CONSTRAINT "fk_internal_working_docs_replaces_id" '
+                            'FOREIGN KEY ("replaces_id") REFERENCES "internal_working_docs"("id") ON DELETE SET NULL'
+                        )
+                        logger.info("Added FK constraint 'fk_internal_working_docs_replaces_id'")
+                    except Exception as e:
+                        logger.debug(f"FK constraint add skipped: {e}")
 
             # Ensure viewer_completed_queue table exists
             vcq_table_exists = await conn.fetchval(

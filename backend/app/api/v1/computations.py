@@ -318,11 +318,14 @@ async def get_filing_computations(
             if current_version is None:
                 current_version = item
 
-    # Check if internal working docs exist for this filing
+    # Check if internal working docs exist for this filing (active only — exclude superseded versions)
     from app.models.internal_working_doc import InternalWorkingDoc
     iw_count = await db.scalar(
         select(func.count()).select_from(InternalWorkingDoc)
-        .where(InternalWorkingDoc.filing_id == filing_id)
+        .where(
+            InternalWorkingDoc.filing_id == filing_id,
+            InternalWorkingDoc.superseded_at.is_(None),
+        )
     )
 
     return ComputationListResponse(
@@ -396,11 +399,14 @@ async def approve_computation(
 
         # Auto-transition filing to FILING state
         if filing.status == FilingStatus.COMPUTATION:
-            # Check mandatory internal working docs
+            # Check mandatory internal working docs (active only)
             from app.models.internal_working_doc import InternalWorkingDoc
             iw_count = await db.scalar(
                 select(func.count()).select_from(InternalWorkingDoc)
-                .where(InternalWorkingDoc.filing_id == filing.id)
+                .where(
+                    InternalWorkingDoc.filing_id == filing.id,
+                    InternalWorkingDoc.superseded_at.is_(None),
+                )
             )
             if not iw_count:
                 raise HTTPException(
@@ -498,11 +504,14 @@ async def approve_computation(
 
     # Auto-transition filing to FILING state if tax is paid
     if body.is_tax_paid and filing.status == FilingStatus.COMPUTATION:
-        # Check mandatory internal working docs
+        # Check mandatory internal working docs (active only)
         from app.models.internal_working_doc import InternalWorkingDoc
         iw_count = await db.scalar(
             select(func.count()).select_from(InternalWorkingDoc)
-            .where(InternalWorkingDoc.filing_id == filing.id)
+            .where(
+                InternalWorkingDoc.filing_id == filing.id,
+                InternalWorkingDoc.superseded_at.is_(None),
+            )
         )
         if not iw_count:
             raise HTTPException(

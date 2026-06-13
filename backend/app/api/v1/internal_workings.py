@@ -17,6 +17,8 @@ from app.models.stored_file import StoredFile
 from app.models.user import User
 from app.schemas.internal_working import (
     InternalWorkingListResponse,
+    InternalWorkingReplaceConfirmRequest,
+    InternalWorkingReplaceUploadRequest,
     InternalWorkingResponse,
     InternalWorkingUploadRequest,
     InternalWorkingUploadURLResponse,
@@ -156,6 +158,181 @@ async def confirm_internal_working_upload(
         uploaded_by=doc.uploaded_by,
         uploaded_by_name=current_user.full_name,
         uploaded_at=doc.uploaded_at,
+        replaces_id=doc.replaces_id,
+        superseded_at=doc.superseded_at,
+    )
+
+
+# ─── POST /internal-workings/{doc_id}/replace-upload-url ─────────
+@router.post("/{doc_id}/replace-upload-url", response_model=InternalWorkingUploadURLResponse)
+async def get_internal_working_replace_upload_url(
+    doc_id: UUID,
+    body: InternalWorkingReplaceUploadRequest,
+    current_user: User = Depends(get_current_manager_executive_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a pre-signed URL to upload a replacement file for an existing internal working doc.
+
+    The original MinIO object is NEVER deleted — version history is preserved.
+    """
+    body.filename = sanitize_filename(body.filename)
+    validate_file_type(body.filename, body.content_type)
+
+    doc_result = await db.execute(
+        select(InternalWorkingDoc).where(InternalWorkingDoc.id == doc_id)
+    )
+    old_doc = doc_result.scalar_one_or_none()
+    if not old_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Internal working document not found")
+
+    if old_doc.superseded_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This internal working document has already been replaced. Replace its latest version instead.",
+        )
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == old_doc.filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_filing_access(db, current_user, filing.client_id)
+
+    if filing.status not in (FilingStatus.COMPUTATION, FilingStatus.FILING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot replace internal working: Filing is in '{filing.status.value}' state. "
+                   f"Replacement is allowed only during COMPUTATION or FILING phase.",
+        )
+
+    client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_user_result.scalar_one_or_none()
+
+    object_key = generate_internal_working_key(
+        client_name=client_user.full_name if client_user else "unknown",
+        financial_year=filing.financial_year,
+        filename=body.filename,
+    )
+
+    upload_url = get_presigned_upload_url(object_key, body.content_type)
+
+    return InternalWorkingUploadURLResponse(
+        upload_url=upload_url,
+        object_key=object_key,
+    )
+
+
+# ─── POST /internal-workings/{doc_id}/replace-confirm ────────────
+@router.post("/{doc_id}/replace-confirm", response_model=InternalWorkingResponse)
+async def confirm_internal_working_replace(
+    doc_id: UUID,
+    body: InternalWorkingReplaceConfirmRequest,
+    current_user: User = Depends(get_current_manager_executive_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm a replacement upload. Marks old row as superseded and creates a new active row.
+
+    The old row's MinIO object is preserved (no S3 delete) so prior versions remain recoverable.
+    The new row inherits the old row's ``label`` (label is not editable on replace).
+    """
+    filename = sanitize_filename(body.filename)
+    validate_file_type(filename, body.content_type)
+    validate_file_size(body.file_size)
+
+    from datetime import datetime
+
+    from app.config import settings
+
+    doc_result = await db.execute(
+        select(InternalWorkingDoc).where(InternalWorkingDoc.id == doc_id)
+    )
+    old_doc = doc_result.scalar_one_or_none()
+    if not old_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Internal working document not found")
+
+    if old_doc.superseded_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This internal working document has already been replaced.",
+        )
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == old_doc.filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_filing_access(db, current_user, filing.client_id)
+
+    if filing.status not in (FilingStatus.COMPUTATION, FilingStatus.FILING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot replace internal working: Filing is in '{filing.status.value}' state.",
+        )
+
+    if not body.object_key.startswith("Internal-workings/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid object key for internal working document.",
+        )
+
+    # Create new StoredFile for the replacement upload
+    new_stored_file = StoredFile(
+        bucket=settings.MINIO_BUCKET_NAME,
+        object_key=body.object_key,
+        original_filename=filename,
+        content_type=body.content_type,
+        file_size_bytes=body.file_size,
+        uploaded_by=current_user.id,
+    )
+    db.add(new_stored_file)
+    await db.flush()
+
+    now = datetime.utcnow()
+
+    # Mark the old row as superseded (DO NOT delete MinIO object)
+    old_doc.superseded_at = now
+
+    # Create the new active row, inheriting the old label
+    new_doc = InternalWorkingDoc(
+        filing_id=old_doc.filing_id,
+        file_id=new_stored_file.id,
+        label=old_doc.label,
+        uploaded_by=current_user.id,
+        uploaded_at=now,
+        replaces_id=old_doc.id,
+    )
+    db.add(new_doc)
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.DOCUMENT_UPLOADED,
+        actor_id=current_user.id,
+        client_id=filing.client_id,
+        filing_id=filing.id,
+        document_id=new_doc.id,
+        details={
+            "type": "internal_working",
+            "action": "replaced",
+            "replaces_id": str(old_doc.id),
+            "old_file_id": str(old_doc.file_id),
+            "filename": filename,
+        },
+    )
+
+    await db.commit()
+    await db.refresh(new_doc)
+
+    return InternalWorkingResponse(
+        id=new_doc.id,
+        filing_id=new_doc.filing_id,
+        file_id=new_doc.file_id,
+        label=new_doc.label,
+        original_filename=filename,
+        uploaded_by=new_doc.uploaded_by,
+        uploaded_by_name=current_user.full_name,
+        uploaded_at=new_doc.uploaded_at,
+        replaces_id=new_doc.replaces_id,
+        superseded_at=new_doc.superseded_at,
     )
 
 
@@ -163,10 +340,15 @@ async def confirm_internal_working_upload(
 @router.get("/filing/{filing_id}", response_model=InternalWorkingListResponse)
 async def list_internal_workings(
     filing_id: UUID,
+    include_history: bool = False,
     current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all internal working documents for a filing. Not visible to clients."""
+    """List internal working documents for a filing. Not visible to clients.
+
+    By default returns only active (non-superseded) docs. Pass
+    ``?include_history=true`` to include all prior (replaced) versions as well.
+    """
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = filing_result.scalar_one_or_none()
     if not filing:
@@ -174,11 +356,15 @@ async def list_internal_workings(
 
     await enforce_filing_access(db, current_user, filing.client_id)
 
-    result = await db.execute(
+    stmt = (
         select(InternalWorkingDoc)
         .where(InternalWorkingDoc.filing_id == filing_id)
         .order_by(InternalWorkingDoc.uploaded_at.desc())
     )
+    if not include_history:
+        stmt = stmt.where(InternalWorkingDoc.superseded_at.is_(None))
+
+    result = await db.execute(stmt)
     docs = result.scalars().all()
 
     items = []
@@ -196,6 +382,8 @@ async def list_internal_workings(
             uploaded_by=doc.uploaded_by,
             uploaded_by_name=uploader.full_name if uploader else None,
             uploaded_at=doc.uploaded_at,
+            replaces_id=doc.replaces_id,
+            superseded_at=doc.superseded_at,
         ))
 
     return InternalWorkingListResponse(items=items, count=len(items))
