@@ -282,14 +282,15 @@ async def confirm_income_heads(
     - Updates the client's master `ClientIncomeHeads` row.
     - Snapshots the values onto the filing (`income_heads_snapshot`).
     - Auto-assigns BASE document placeholders for the selected heads.
-    - Auto-transitions INITIATED -> DOCUMENT_UPLOAD if a manager+executive are assigned.
+    - Auto-transitions INITIATED -> DOCUMENT_UPLOAD unconditionally so the
+      client can begin uploading documents. The Manager / Executive
+      assignment is enforced later at `move-to-computation` instead.
     """
     from datetime import datetime as _dt
 
     from app.enums import DocSubCategory, IncomeHeadCategory, INCOME_HEAD_FLAG_FIELDS
     from app.models.client_income_heads import ClientIncomeHeads
     from app.models.executive_assignment import ExecutiveClientAssignment
-    from app.models.manager_client_assignment import ManagerClientAssignment
     from app.services.document_service import (
         assign_document_placeholders,
         resolve_doc_types_for_income_heads,
@@ -394,17 +395,13 @@ async def confirm_income_heads(
         after_count = after.scalar() or 0
         text_fields_assigned_count = max(0, after_count - before_count)
 
-    # 6. Transition INITIATED -> DOCUMENT_UPLOAD only if manager + executive are assigned
+    # 6. Transition INITIATED -> DOCUMENT_UPLOAD unconditionally.
+    #    The client must be unblocked to upload documents even before an
+    #    Executive (or Manager) is assigned. Mgr/Exec assignment is enforced
+    #    later at the `move-to-computation` gate.
     transitioned_to: Optional[FilingStatus] = None
     if filing.status == FilingStatus.INITIATED:
-        mgr_result = await db.execute(
-            select(ManagerClientAssignment).where(
-                ManagerClientAssignment.client_id == filing.client_id,
-                ManagerClientAssignment.is_active == True,
-            )
-        )
-        has_manager = mgr_result.scalar_one_or_none() is not None
-
+        # Opportunistically assign the executive if one happens to already exist
         exec_result = await db.execute(
             select(ExecutiveClientAssignment).where(
                 ExecutiveClientAssignment.client_id == filing.client_id,
@@ -412,19 +409,21 @@ async def confirm_income_heads(
             )
         )
         exec_assignment = exec_result.scalar_one_or_none()
+        if exec_assignment and not filing.assigned_executive_id:
+            filing.assigned_executive_id = exec_assignment.executive_id
 
-        if has_manager and exec_assignment:
-            if not filing.assigned_executive_id:
-                filing.assigned_executive_id = exec_assignment.executive_id
-
-            await transition_filing_status(
-                db=db,
-                filing=filing,
-                to_status=FilingStatus.DOCUMENT_UPLOAD,
-                changed_by=current_user.id,
-                remarks="Income heads confirmed; base documents auto-assigned",
-            )
-            transitioned_to = FilingStatus.DOCUMENT_UPLOAD
+        await transition_filing_status(
+            db=db,
+            filing=filing,
+            to_status=FilingStatus.DOCUMENT_UPLOAD,
+            changed_by=current_user.id,
+            remarks=(
+                "Income heads confirmed; base documents auto-assigned"
+                if exec_assignment
+                else "Income heads confirmed; awaiting executive assignment"
+            ),
+        )
+        transitioned_to = FilingStatus.DOCUMENT_UPLOAD
 
     # 7. Audit
     await record_audit_event(
@@ -720,6 +719,21 @@ async def get_filing(
         .where(InternalWorkingDoc.filing_id == filing.id)
     )
 
+    # Compute "pending_executive_assignment" — true when the filing has no
+    # assigned executive AND no active ExecutiveClientAssignment exists for
+    # the client. This is what gates `move-to-computation` and what the
+    # frontend uses to render the "awaiting executive" banner.
+    pending_executive_assignment = False
+    if not filing.assigned_executive_id:
+        from app.models.executive_assignment import ExecutiveClientAssignment
+        exec_assign_result = await db.execute(
+            select(ExecutiveClientAssignment).where(
+                ExecutiveClientAssignment.client_id == filing.client_id,
+                ExecutiveClientAssignment.is_active == True,
+            )
+        )
+        pending_executive_assignment = exec_assign_result.scalar_one_or_none() is None
+
     return FilingResponse(
         id=filing.id,
         client_id=filing.client_id,
@@ -742,6 +756,7 @@ async def get_filing(
         halted_at=filing.halted_at,
         halt_reason=filing.halt_reason,
         has_internal_workings=bool(iw_count and iw_count > 0),
+        pending_executive_assignment=pending_executive_assignment,
         created_at=filing.created_at,
         updated_at=filing.updated_at,
     )
@@ -1207,6 +1222,44 @@ async def move_to_computation(
             detail=f"Cannot move to computation: Filing is in '{filing.status.value}' state. "
                    f"The filing must be in DOCUMENT_UPLOAD or PROCESSING state.",
         )
+
+    # Enforce Manager + Executive assignment at this gate (allows clients to
+    # upload documents before assignment, but blocks the move to computation
+    # until the practice has staffed the engagement).
+    from app.models.executive_assignment import ExecutiveClientAssignment
+    from app.models.manager_client_assignment import ManagerClientAssignment
+
+    mgr_result = await db.execute(
+        select(ManagerClientAssignment).where(
+            ManagerClientAssignment.client_id == filing.client_id,
+            ManagerClientAssignment.is_active == True,
+        )
+    )
+    if not mgr_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A Manager must be assigned to this client before the filing can move to "
+                   "computation. Partner must assign the client to a manager via "
+                   "POST /managers/{id}/clients.",
+        )
+
+    exec_result = await db.execute(
+        select(ExecutiveClientAssignment).where(
+            ExecutiveClientAssignment.client_id == filing.client_id,
+            ExecutiveClientAssignment.is_active == True,
+        )
+    )
+    exec_assignment = exec_result.scalar_one_or_none()
+    if not exec_assignment:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="An Executive must be assigned to this client before the filing can move to "
+                   "computation. Please assign an Executive first via the Executive Management page.",
+        )
+
+    # Backfill assigned_executive_id on the filing if it is still null
+    if not filing.assigned_executive_id:
+        filing.assigned_executive_id = exec_assignment.executive_id
 
     # Validate all documents are approved
     from app.services.document_service import check_all_documents_approved

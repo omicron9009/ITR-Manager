@@ -4,7 +4,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.file_validation import sanitize_filename, validate_file_size, validate_file_type
@@ -638,6 +638,93 @@ async def confirm_document_upload(
 
     # Update document placeholder
     doc = await record_document_upload(db, document_id, stored_file.id, current_user.id)
+
+    # If the client is uploading but no Executive is assigned yet, alert
+    # Partner + active Manager so they can staff the engagement. The filing
+    # cannot move to Computation until an Executive is assigned, so this is
+    # the trigger that gets the practice to act. Sent only on the FIRST
+    # client upload for the filing to avoid notification spam.
+    if filing_for_doc and current_user.role == UserRole.CLIENT:
+        from app.models.executive_assignment import ExecutiveClientAssignment
+        from app.models.manager_client_assignment import ManagerClientAssignment
+
+        exec_assigned_result = await db.execute(
+            select(ExecutiveClientAssignment).where(
+                ExecutiveClientAssignment.client_id == filing_for_doc.client_id,
+                ExecutiveClientAssignment.is_active == True,
+            )
+        )
+        no_executive_assigned = exec_assigned_result.scalar_one_or_none() is None
+
+        # Count other docs on this filing already in UPLOADED / APPROVED /
+        # REJECTED state — if zero, this is the first upload.
+        other_uploaded_count = await db.scalar(
+            select(func.count()).select_from(FilingDocument).where(
+                FilingDocument.filing_id == filing_for_doc.id,
+                FilingDocument.id != doc.id,
+                FilingDocument.status.in_((
+                    DocumentStatus.UPLOADED,
+                    DocumentStatus.APPROVED,
+                    DocumentStatus.REJECTED,
+                )),
+            )
+        )
+
+        if no_executive_assigned and (other_uploaded_count or 0) == 0:
+            client_user_for_notif_result = await db.execute(
+                select(User).where(User.id == filing_for_doc.client_id)
+            )
+            client_user_for_notif = client_user_for_notif_result.scalar_one_or_none()
+            client_display_name = (
+                client_user_for_notif.full_name if client_user_for_notif else "Client"
+            )
+
+            notif_title = f"{client_display_name} — Documents being uploaded, Executive needed"
+            notif_message = (
+                f"{client_display_name} has started uploading documents for FY "
+                f"{filing_for_doc.financial_year}, but no Executive is assigned yet. "
+                "Please assign an Executive so the filing can progress to Computation."
+            )
+
+            # Notify all active Partners
+            partners_result = await db.execute(
+                select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+            )
+            for partner in partners_result.scalars().all():
+                await create_notification(
+                    db=db,
+                    user_id=partner.id,
+                    title=notif_title,
+                    message=notif_message,
+                    related_filing_id=filing_for_doc.id,
+                    related_client_id=filing_for_doc.client_id,
+                    client_name=client_display_name,
+                    financial_year=filing_for_doc.financial_year,
+                    action_url_path=f"/clients/{filing_for_doc.client_id}",
+                    cta_label="Assign Executive",
+                )
+
+            # Notify the active Manager for this client (if any)
+            mgr_assign_result = await db.execute(
+                select(ManagerClientAssignment).where(
+                    ManagerClientAssignment.client_id == filing_for_doc.client_id,
+                    ManagerClientAssignment.is_active == True,
+                )
+            )
+            mgr_assign = mgr_assign_result.scalar_one_or_none()
+            if mgr_assign:
+                await create_notification(
+                    db=db,
+                    user_id=mgr_assign.manager_id,
+                    title=notif_title,
+                    message=notif_message,
+                    related_filing_id=filing_for_doc.id,
+                    related_client_id=filing_for_doc.client_id,
+                    client_name=client_display_name,
+                    financial_year=filing_for_doc.financial_year,
+                    action_url_path=f"/clients/{filing_for_doc.client_id}",
+                    cta_label="Assign Executive",
+                )
 
     # Get type name
     type_result = await db.execute(select(MasterDocumentType).where(MasterDocumentType.id == doc.document_type_id))
