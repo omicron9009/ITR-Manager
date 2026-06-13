@@ -30,8 +30,17 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(subject_id: UUID, role: str) -> str:
-    """Create a signed JWT access token."""
-    expire = datetime.utcnow() + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    """Create a signed JWT access token.
+
+    DASHBOARD_USER tokens use a long TTL (``JWT_DASHBOARD_TOKEN_EXPIRE_MINUTES``,
+    default 30 days) so TV/kiosk dashboards don't get logged out. All other
+    roles use the standard ``JWT_ACCESS_TOKEN_EXPIRE_MINUTES`` (default 60 min).
+    """
+    if role == UserRole.DASHBOARD_USER.value:
+        ttl_minutes = settings.JWT_DASHBOARD_TOKEN_EXPIRE_MINUTES
+    else:
+        ttl_minutes = settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+    expire = datetime.utcnow() + timedelta(minutes=ttl_minutes)
     payload = {
         "sub": str(subject_id),
         "role": role,
