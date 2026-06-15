@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
     DuplicateFilingError,
-    ExecutiveNotAssignedError,
     InvalidStateTransitionError,
 )
 from app.enums import AuditEventType, FilingStatus, VALID_FILING_TRANSITIONS
@@ -67,9 +66,10 @@ async def transition_filing_status(
     if to_status not in valid_targets:
         raise InvalidStateTransitionError(from_status.value, to_status.value)
 
-    # Special validation: DOCUMENT_UPLOAD requires an assigned executive
-    if to_status == FilingStatus.DOCUMENT_UPLOAD and not filing.assigned_executive_id:
-        raise ExecutiveNotAssignedError()
+    # Note: DOCUMENT_UPLOAD intentionally does NOT require an assigned
+    # executive here. Clients are allowed to upload documents before the
+    # practice has staffed the engagement; the Manager + Executive gate is
+    # enforced later at the `move-to-computation` endpoint.
 
     # Update filing status
     filing.status = to_status
