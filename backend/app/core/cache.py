@@ -273,6 +273,7 @@ class NS:
     FORM_FIELDS = "form_fields"
     TAGS = "tags"
     EMAIL_CONFIG = "email_config"
+    WHATSAPP_CONFIG = "whatsapp_config"
     DASHBOARD_SUMMARY = "dashboard_summary"
     REPORT = "report"
     CLIENT_LIST = "client_list"

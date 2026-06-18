@@ -28,6 +28,8 @@ class ClientProfile(Base):
     referral_source = Column(SAEnum(ReferralSource, name="referral_source"), nullable=True)
     referral_source_other = Column(Text, nullable=True)
     partner_tag_id = Column(UUID(as_uuid=True), ForeignKey("tags.id", ondelete="SET NULL"), nullable=True)
+    # WhatsApp opt-in (per-client; phone number is sourced from users.phone_number)
+    whatsapp_opt_in = Column(Boolean, nullable=False, server_default="true", default=True)
     form_data = Column(JSONB, nullable=False, default=dict)
     form_submitted_at = Column(DateTime(timezone=True), nullable=True)
     declaration_accepted_at = Column(DateTime(timezone=True), nullable=True)

@@ -12,6 +12,12 @@ cd backend
 docker build -t itr-platform:latest .
 ```
 
+### For - docker compose for dev env 
+```bash
+ docker build -t itr-backend:dev .; docker tag itr-backend:dev omicron9009/itr-backend:dev; docker push omicron9009/itr-backend:dev
+```
+
+
 ```bash
 docker build -t itr-platform:latest . &&  docker tag itr-platform:latest omicron9009/itr-platform:latest && docker push omicron9009/itr-platform:latest
 ```

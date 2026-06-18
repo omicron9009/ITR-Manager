@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # Public endpoint for presigned URLs (used in browser). Falls back to MINIO_ENDPOINT.
     MINIO_PUBLIC_ENDPOINT: str = ""
     MINIO_PUBLIC_USE_SSL: bool = True
+    # When set, bucket-level SSE-S3 encryption is enabled on startup (production only).
+    # Leave empty for dev — the standalone MinIO container has no KMS configured.
+    MINIO_KMS_SECRET_KEY: str = ""
 
     # JWT Authentication
     JWT_SECRET_KEY: str = "CHANGE-ME-TO-A-RANDOM-SECRET"
@@ -93,6 +96,20 @@ class Settings(BaseSettings):
 
     # Gzip compression threshold (bytes). 0 disables.
     GZIP_MIN_SIZE: int = 1024
+
+    # ─── WhatsApp / OpenWA gateway ──────────────────────────
+    # Fernet key (base64-encoded 32 bytes) used to encrypt the OpenWA admin
+    # API key at rest. If not a valid Fernet key, the service derives one
+    # via sha256 — but you should set a real one in production.
+    WHATSAPP_ENCRYPTION_KEY: str = "CHANGE-ME-WHATSAPP-FERNET-KEY-32B"
+    # Default values pre-filled in the Setup form (UI may override).
+    WHATSAPP_DEFAULT_BASE_URL: str = "http://openwa-api:2785"
+    WHATSAPP_DEFAULT_SESSION_NAME: str = "itr-platform"
+    WHATSAPP_HTTP_TIMEOUT_SECONDS: int = 10
+    # OpenWA bootstrap admin key (used by the operator once to issue a
+    # per-app API key that we then store in DB). Not consumed by backend
+    # at runtime — exposed here so the deploy can read it from the same .env.
+    WHATSAPP_OPENWA_MASTER_KEY: str = ""
 
 
 settings = Settings()

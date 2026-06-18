@@ -159,6 +159,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      openwa-api:
+        condition: service_started
     networks:
       - ingress_network
       - internal_network
@@ -166,6 +168,63 @@ services:
       resources:
         limits:
           memory: 4gb
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════
+  # WHATSAPP GATEWAY (OpenWA — internal-only, not exposed via Traefik)
+  # ═══════════════════════════════════════════════════════════════
+  openwa-api:
+    image: omicron9009/itr-openwa:latest
+    container_name: itr-openwa-api
+    # Chromium needs more shared memory than Docker's 64MB default
+    shm_size: '1gb'
+    environment:
+      - NODE_ENV=production
+      - PORT=2785
+      - LOG_LEVEL=info
+      # Reuse the platform Postgres — backend creates the `openwa` DB on startup
+      - DATABASE_TYPE=postgres
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USERNAME=${POSTGRES_USER}
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+      - DATABASE_NAME=openwa
+      - DATABASE_SYNCHRONIZE=true
+      # Reuse the platform Redis on a separate db index
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+      # Local volume for Chromium session data + media (separate from MinIO)
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=/app/data/media
+      - SESSION_DATA_PATH=/app/data/sessions
+      - PUPPETEER_HEADLESS=true
+      - PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu,--disable-crash-reporter,--disable-breakpad
+      - PLUGINS_ENABLED=false
+      # Bootstrap admin key — used once by the operator to mint a per-app key
+      - API_MASTER_KEY=${WHATSAPP_OPENWA_MASTER_KEY}
+      # Lock CORS to the backend container only (no browser access needed)
+      - CORS_ORIGINS=http://backend-api:8000
+    volumes:
+      - F:\PlatformData\openwa:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal_network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:2785/api/health',(r)=>process.exit(r.statusCode===200?0:1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1500mb
     restart: unless-stopped
 
   frontend-app:

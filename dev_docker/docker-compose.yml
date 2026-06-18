@@ -1,0 +1,154 @@
+name: itr-manager-dev
+
+services:
+  # ─── Data layer ─────────────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine          # must match the version used in the all-in-one image
+    container_name: itr-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "127.0.0.1:5433:5432"          # expose on 5433 so local psql tools can connect
+    volumes:
+      - C:/itr-platform/postgres-data-local:/var/lib/postgresql/data
+    networks:
+      - dev_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: itr-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - C:/itr-platform/minio-data:/data
+    networks:
+      - dev_network
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: itr-redis
+    command:
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - dev_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ─── WhatsApp Gateway ────────────────────────────────────────
+  openwa-api:
+    image: omicron9009/itr-openwa:latest
+    container_name: itr-openwa-api
+    shm_size: '1gb'
+    environment:
+      - NODE_ENV=production
+      - PORT=2785
+      - LOG_LEVEL=info
+      - DATABASE_TYPE=postgres
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USERNAME=${POSTGRES_USER}
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+      - DATABASE_NAME=openwa
+      - DATABASE_SYNCHRONIZE=true
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=/app/data/media
+      - SESSION_DATA_PATH=/app/data/sessions
+      - PUPPETEER_HEADLESS=true
+      - PUPPETEER_ARGS=--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu,--disable-crash-reporter,--disable-breakpad
+      - PLUGINS_ENABLED=false
+      - API_MASTER_KEY=${WHATSAPP_OPENWA_MASTER_KEY}
+      - CORS_ORIGINS=http://backend-api:8000
+    volumes:
+      - C:/itr-platform/openwa:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dev_network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:2785/api/health',(r)=>process.exit(r.statusCode===200?0:1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # ─── Application layer ───────────────────────────────────────
+  backend-api:
+    image: omicron9009/itr-backend:dev
+    container_name: itr-backend-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      openwa-api:
+        condition: service_started
+    networks:
+      - dev_network
+    restart: unless-stopped
+
+  frontend-app:
+    image: omicron9009/itr-frontend:dev
+    container_name: itr-frontend-ui
+    entrypoint: ["node", "server.js"]
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend-api
+    networks:
+      - dev_network
+    restart: unless-stopped
+
+networks:
+  dev_network:
+    name: itr-dev-network

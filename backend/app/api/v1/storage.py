@@ -206,7 +206,10 @@ async def get_completed_doc_upload_url(
     """Get upload URL for ITR Acknowledgement or Invoice (Manager/Executive/Partner)."""
     filename = sanitize_filename(filename)
 
-    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
+    if doc_type == CompletedDocType.INVOICE:
+        if current_user.role != UserRole.PARTNER:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice upload is restricted to Partner")
+    elif current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     # Validate file type (skip for ITR_JSON which has its own validation)
@@ -259,7 +262,10 @@ async def confirm_completed_doc_upload(
     logger = logging.getLogger("app")
     filename = sanitize_filename(filename)
 
-    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
+    if doc_type == CompletedDocType.INVOICE:
+        if current_user.role != UserRole.PARTNER:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice upload is restricted to Partner")
+    elif current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     # Validate file type and size (skip for ITR_JSON which has its own validation)
@@ -454,8 +460,9 @@ async def confirm_completed_doc_upload(
 
     # Check if all required completed docs are uploaded — notify manager for approval
     # FILING→PAYMENT transition now requires all docs to be PARTNER_APPROVED (handled in approval endpoints)
+    # INVOICE is excluded here: it is uploaded by Partner and approved directly by Partner without manager involvement.
     if filing.status == FilingStatus.FILING:
-        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
+        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
         existing_docs_result = await db.execute(
             select(FilingCompletedDoc.doc_type).where(FilingCompletedDoc.filing_id == filing_id)
         )
@@ -591,6 +598,12 @@ async def manager_approve_completed_doc(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
 
     await enforce_client_access(db, current_user, filing.client_id)
+
+    if doc.doc_type == CompletedDocType.INVOICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invoice approval is reserved for Partner only",
+        )
 
     if doc.status != CompletedDocStatus.UPLOADED:
         raise HTTPException(
@@ -764,6 +777,12 @@ async def manager_reject_completed_doc(
 
     await enforce_client_access(db, current_user, filing.client_id)
 
+    if doc.doc_type == CompletedDocType.INVOICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invoice management is reserved for Partner only",
+        )
+
     if doc.status != CompletedDocStatus.UPLOADED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -822,6 +841,8 @@ async def get_file_download_url(
         )
         completed_doc = doc_result.scalar_one_or_none()
         if completed_doc:
+            if completed_doc.doc_type == CompletedDocType.INVOICE and current_user.role not in (UserRole.PARTNER, UserRole.CLIENT):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice download is restricted to Partner")
             file_result = await db.execute(select(StoredFile).where(StoredFile.id == completed_doc.file_id))
             stored_file = file_result.scalar_one_or_none()
 
