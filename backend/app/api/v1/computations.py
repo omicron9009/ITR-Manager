@@ -1,4 +1,4 @@
-"""API v1 — Computation workflow endpoints."""
+﻿"""API v1 — Computation workflow endpoints."""
 
 from uuid import UUID
 
@@ -129,7 +129,7 @@ async def confirm_computation_upload(
     validate_file_size(file_size)
 
     from app.config import settings
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = filing_result.scalar_one_or_none()
@@ -175,7 +175,7 @@ async def confirm_computation_upload(
     await db.flush()
 
     # Update filing timestamp
-    filing.computation_uploaded_at = datetime.utcnow()
+    filing.computation_uploaded_at = datetime.now(timezone.utc)
     filing.updated_by = current_user.id
 
     await record_audit_event(
@@ -366,7 +366,7 @@ async def approve_computation(
     if filing.client_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your filing")
 
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     # ── Scenario B: Computation already approved, client is confirming tax payment ──
     if computation.status == ComputationStatus.CLIENT_APPROVED:
@@ -384,7 +384,7 @@ async def approve_computation(
 
         # Confirm tax payment
         filing.is_tax_paid = True
-        filing.tax_paid_at = datetime.utcnow()
+        filing.tax_paid_at = datetime.now(timezone.utc)
         filing.updated_by = current_user.id
 
         await record_audit_event(
@@ -481,16 +481,16 @@ async def approve_computation(
     # Approve computation (client final approval)
     computation.status = ComputationStatus.CLIENT_APPROVED
     computation.approved_by = current_user.id
-    computation.approved_at = datetime.utcnow()
+    computation.approved_at = datetime.now(timezone.utc)
 
     # Set computation_approved_at milestone on filing
-    filing.computation_approved_at = datetime.utcnow()
+    filing.computation_approved_at = datetime.now(timezone.utc)
     filing.updated_by = current_user.id
 
     # Handle tax payment confirmation
     if body.is_tax_paid:
         filing.is_tax_paid = True
-        filing.tax_paid_at = datetime.utcnow()
+        filing.tax_paid_at = datetime.now(timezone.utc)
 
     await record_audit_event(
         db=db,
@@ -648,10 +648,10 @@ async def reject_computation(
         )
 
     # Reject computation
-    from datetime import datetime
+    from datetime import datetime, timezone
     computation.status = ComputationStatus.REJECTED
     computation.rejected_by = current_user.id
-    computation.rejected_at = datetime.utcnow()
+    computation.rejected_at = datetime.now(timezone.utc)
     computation.rejection_reason = body.reason
 
     await record_audit_event(
@@ -734,10 +734,10 @@ async def manager_approve_computation(
                    f"Only 'UPLOADED' computations can be manager-approved.",
         )
 
-    from datetime import datetime
+    from datetime import datetime, timezone
     computation.status = ComputationStatus.MANAGER_APPROVED
     computation.manager_approved_by = current_user.id
-    computation.manager_approved_at = datetime.utcnow()
+    computation.manager_approved_at = datetime.now(timezone.utc)
 
     await record_audit_event(
         db=db,
@@ -808,10 +808,10 @@ async def manager_reject_computation(
                    f"Only 'UPLOADED' computations can be manager-rejected.",
         )
 
-    from datetime import datetime
+    from datetime import datetime, timezone
     computation.status = ComputationStatus.MANAGER_REJECTED
     computation.manager_rejected_by = current_user.id
-    computation.manager_rejected_at = datetime.utcnow()
+    computation.manager_rejected_at = datetime.now(timezone.utc)
     computation.manager_rejection_reason = body.reason
 
     await record_audit_event(
@@ -903,10 +903,10 @@ async def partner_approve_computation(
                    f"Only 'UPLOADED' or 'MANAGER_APPROVED' computations can be partner-approved.",
         )
 
-    from datetime import datetime
+    from datetime import datetime, timezone
     computation.status = ComputationStatus.PARTNER_APPROVED
     computation.partner_approved_by = current_user.id
-    computation.partner_approved_at = datetime.utcnow()
+    computation.partner_approved_at = datetime.now(timezone.utc)
 
     await record_audit_event(
         db=db,
@@ -969,10 +969,10 @@ async def partner_reject_computation(
                    f"Only 'UPLOADED' or 'MANAGER_APPROVED' computations can be partner-rejected.",
         )
 
-    from datetime import datetime
+    from datetime import datetime, timezone
     computation.status = ComputationStatus.REJECTED
     computation.rejected_by = current_user.id
-    computation.rejected_at = datetime.utcnow()
+    computation.rejected_at = datetime.now(timezone.utc)
     computation.rejection_reason = body.reason
 
     await record_audit_event(

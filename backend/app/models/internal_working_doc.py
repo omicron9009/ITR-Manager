@@ -1,4 +1,4 @@
-"""Model: internal_working_docs — Internal working documents uploaded during computation phase.
+﻿"""Model: internal_working_docs — Internal working documents uploaded during computation phase.
 
 Supports versioning via "replace" semantics:
 - ``replaces_id`` points to the older row this row supersedes (NULL on first upload).
@@ -7,7 +7,7 @@ Supports versioning via "replace" semantics:
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
@@ -24,8 +24,8 @@ class InternalWorkingDoc(Base):
     file_id = Column(UUID(as_uuid=True), ForeignKey("stored_files.id", ondelete="RESTRICT"), nullable=False)
     label = Column(String(255), nullable=True)  # Optional description
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # ── Versioning fields ──────────────────────────────────────
     # New row points back to the older row it replaces (NULL = original upload)

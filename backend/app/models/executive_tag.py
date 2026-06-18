@@ -1,7 +1,7 @@
-"""Model: executive_tags — Maps Tags to Executives (many-to-many)."""
+﻿"""Model: executive_tags — Maps Tags to Executives (many-to-many)."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
@@ -17,7 +17,7 @@ class ExecutiveTag(Base):
     executive_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     tag_id = Column(UUID(as_uuid=True), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False)
     assigned_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    assigned_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     is_active = Column(Boolean, nullable=False, default=True)
 
     # Relationships

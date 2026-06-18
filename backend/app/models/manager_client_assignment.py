@@ -1,7 +1,7 @@
-"""Model: manager_client_assignments — Manager-to-Client ownership relationships."""
+﻿"""Model: manager_client_assignments — Manager-to-Client ownership relationships."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
@@ -17,7 +17,7 @@ class ManagerClientAssignment(Base):
     manager_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     client_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     assigned_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    assigned_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     is_active = Column(Boolean, nullable=False, default=True)
 
     # Relationships

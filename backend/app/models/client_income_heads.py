@@ -1,7 +1,7 @@
-"""Model: client_income_heads — Income head flags collected during client registration."""
+﻿"""Model: client_income_heads — Income head flags collected during client registration."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
@@ -39,7 +39,7 @@ class ClientIncomeHeads(Base):
     any_other = Column(Boolean, nullable=False, default=False)
     any_other_text = Column(String(255), nullable=True)
 
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     user = relationship("User", back_populates="income_heads")

@@ -1,6 +1,6 @@
-"""Service — Filing state machine transitions."""
+﻿"""Service — Filing state machine transitions."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -76,7 +76,7 @@ async def transition_filing_status(
     filing.updated_by = changed_by
 
     # Set milestone timestamps
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if to_status == FilingStatus.DOCUMENT_UPLOAD:
         filing.onboarding_completed_at = now
     elif to_status == FilingStatus.PROCESSING and from_status == FilingStatus.COMPUTATION:

@@ -1,4 +1,4 @@
-"""Service — WhatsApp delivery via OpenWA gateway.
+﻿"""Service — WhatsApp delivery via OpenWA gateway.
 
 The Partner configures one global session via the UI; clients individually
 opt-in (and provide a phone number) to receive notifications via WhatsApp.
@@ -17,7 +17,7 @@ import asyncio
 import base64
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -197,9 +197,9 @@ async def _persist_session_state(
     if last_error is not None:
         cfg.last_error = last_error
     if bump_qr:
-        cfg.last_qr_at = datetime.utcnow()
+        cfg.last_qr_at = datetime.now(timezone.utc)
     if mark_connected and cfg.connected_at is None:
-        cfg.connected_at = datetime.utcnow()
+        cfg.connected_at = datetime.now(timezone.utc)
     await db.flush()
 
 

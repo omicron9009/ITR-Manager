@@ -1,7 +1,7 @@
-"""Model: filing_computations — Versioned computation documents per filing."""
+﻿"""Model: filing_computations — Versioned computation documents per filing."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import sqlalchemy as sa
 from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, UniqueConstraint
@@ -23,7 +23,7 @@ class FilingComputation(Base):
         Enum(ComputationStatus, name="computation_status"), nullable=False, default=ComputationStatus.UPLOADED
     )
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # Manager approval (first level)
     manager_approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -42,7 +42,7 @@ class FilingComputation(Base):
     rejected_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     rejected_at = Column(DateTime(timezone=True), nullable=True)
     rejection_reason = Column(sa.Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     filing = relationship("ITRFiling", back_populates="computations")

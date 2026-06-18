@@ -1,7 +1,7 @@
-"""Model: whatsapp_config — Partner-managed OpenWA gateway configuration (singleton)."""
+﻿"""Model: whatsapp_config — Partner-managed OpenWA gateway configuration (singleton)."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import UUID
@@ -37,5 +37,5 @@ class WhatsAppConfig(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     configured_by = Column(UUID(as_uuid=True), nullable=False)
 
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

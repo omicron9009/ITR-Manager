@@ -1,7 +1,7 @@
-"""Model: stored_files — MinIO object metadata for all uploaded files."""
+﻿"""Model: stored_files — MinIO object metadata for all uploaded files."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
@@ -20,7 +20,7 @@ class StoredFile(Base):
     content_type = Column(String(255), nullable=False)
     file_size_bytes = Column(BigInteger, nullable=False)
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     uploader = relationship("User", foreign_keys=[uploaded_by], back_populates="uploaded_files")

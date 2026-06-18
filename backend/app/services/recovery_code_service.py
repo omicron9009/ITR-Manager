@@ -1,7 +1,7 @@
-"""Service — Recovery code generation, verification, and management."""
+﻿"""Service — Recovery code generation, verification, and management."""
 
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 import bcrypt
@@ -75,7 +75,7 @@ async def verify_recovery_code(db: AsyncSession, user_id: UUID, plaintext_code: 
     for rc in unused_codes:
         if _verify_code(normalized, rc.code_hash):
             rc.is_used = True
-            rc.used_at = datetime.utcnow()
+            rc.used_at = datetime.now(timezone.utc)
             await db.flush()
             return True
 

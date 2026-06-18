@@ -1,4 +1,4 @@
-"""API v1 — Filing lifecycle endpoints."""
+﻿"""API v1 — Filing lifecycle endpoints."""
 
 from typing import Optional
 from uuid import UUID
@@ -69,7 +69,7 @@ async def initiate_filing(
 
     # Generate engagement letter PDF and upload to MinIO
     # Fee may be None — letter will use "mutually decided" language
-    from datetime import datetime
+    from datetime import datetime, timezone
     from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter, get_selected_income_heads
 
     # Fetch client income heads for dynamic engagement letter
@@ -80,7 +80,7 @@ async def initiate_filing(
     client_income_heads = heads_result.scalar_one_or_none()
     selected_heads = get_selected_income_heads(client_income_heads)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     pdf_bytes = generate_engagement_letter_pdf(
         client_name=current_user.full_name,
         financial_year=body.financial_year,
@@ -286,7 +286,7 @@ async def confirm_income_heads(
       client can begin uploading documents. The Manager / Executive
       assignment is enforced later at `move-to-computation` instead.
     """
-    from datetime import datetime as _dt
+    from datetime import datetime, timezone
 
     from app.enums import DocSubCategory, IncomeHeadCategory, INCOME_HEAD_FLAG_FIELDS
     from app.models.client_income_heads import ClientIncomeHeads
@@ -326,7 +326,7 @@ async def confirm_income_heads(
             setattr(heads_row, field, value)
 
     # 2. Snapshot onto filing
-    now = _dt.utcnow()
+    now = datetime.now(timezone.utc)
     filing.income_heads_snapshot = payload
     filing.income_heads_confirmed_at = now
 
@@ -481,7 +481,7 @@ async def update_filing_fee(
     No client approval step needed — the client pre-agreed to 'mutually decided' fees.
     """
     from decimal import Decimal
-    from datetime import datetime
+    from datetime import datetime, timezone
     from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter, get_selected_income_heads
 
     if current_user.role != UserRole.PARTNER:
@@ -521,7 +521,7 @@ async def update_filing_fee(
     selected_heads = get_selected_income_heads(client_income_heads)
 
     # Regenerate engagement letter PDF with actual fee
-    accepted_at = filing.engagement_accepted_at or datetime.utcnow()
+    accepted_at = filing.engagement_accepted_at or datetime.now(timezone.utc)
     pdf_bytes = generate_engagement_letter_pdf(
         client_name=client_user.full_name if client_user else "Client",
         financial_year=filing.financial_year,
@@ -1026,8 +1026,8 @@ async def submit_documents(
                    f"Please upload all required documents before submitting.",
         )
 
-    from datetime import datetime
-    filing.documents_submitted_at = datetime.utcnow()
+    from datetime import datetime, timezone
+    filing.documents_submitted_at = datetime.now(timezone.utc)
 
     # Filing stays in DOCUMENT_UPLOAD — it only moves to PROCESSING once
     # the Executive/Partner has approved ALL documents.

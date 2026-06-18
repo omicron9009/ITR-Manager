@@ -1,4 +1,4 @@
-"""Service — Notification creation and delivery."""
+﻿"""Service — Notification creation and delivery."""
 
 import asyncio
 import logging
@@ -34,7 +34,7 @@ async def _deliver_email_for_notification(
     extra_details: Optional[dict] = None,
 ) -> None:
     """Fire-and-forget: send email using an independent DB session."""
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from app.database import AsyncSessionLocal
     from app.services.email_service import send_notification_email
@@ -58,7 +58,7 @@ async def _deliver_email_for_notification(
                 await db.execute(
                     update(Notification)
                     .where(Notification.id == notification_id)
-                    .values(email_sent=True, email_sent_at=datetime.utcnow())
+                    .values(email_sent=True, email_sent_at=datetime.now(timezone.utc))
                 )
                 await db.commit()
     except Exception as e:
@@ -78,7 +78,7 @@ async def _deliver_whatsapp_for_notification(
     Failures are swallowed and stored on the notification row — they must
     never break the in-app/email path or the calling request.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from app.config import settings
     from app.database import AsyncSessionLocal
@@ -112,7 +112,7 @@ async def _deliver_whatsapp_for_notification(
                 .where(Notification.id == notification_id)
                 .values(
                     whatsapp_sent=True,
-                    whatsapp_sent_at=datetime.utcnow(),
+                    whatsapp_sent_at=datetime.now(timezone.utc),
                     whatsapp_message_id=result.get("message_id"),
                 )
             )

@@ -1,6 +1,6 @@
-"""Core — Security: Local JWT authentication with password hashing."""
+﻿"""Core — Security: Local JWT authentication with password hashing."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
@@ -40,7 +40,7 @@ def create_access_token(subject_id: UUID, role: str) -> str:
         ttl_minutes = settings.JWT_DASHBOARD_TOKEN_EXPIRE_MINUTES
     else:
         ttl_minutes = settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
-    expire = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
     payload = {
         "sub": str(subject_id),
         "role": role,

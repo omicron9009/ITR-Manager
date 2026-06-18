@@ -1,6 +1,6 @@
-"""Service — Text-field placeholder management (assign, fill, approve, reject)."""
+﻿"""Service — Text-field placeholder management (assign, fill, approve, reject)."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -100,7 +100,7 @@ async def set_text_field_value(
     - FILLED / REJECTED / APPROVED -> FILLED (re-edit). APPROVED reverts to FILLED.
     """
     field.value = value
-    field.filled_at = datetime.utcnow()
+    field.filled_at = datetime.now(timezone.utc)
     field.filled_by = actor_id
     field.status = TextFieldStatus.FILLED
     field.rejection_reason = None
@@ -130,7 +130,7 @@ async def approve_text_fields(
     )
     fields = result.scalars().all()
     approved: list[FilingTextField] = []
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     for f in fields:
         if f.status != TextFieldStatus.FILLED:
             continue
@@ -165,7 +165,7 @@ async def reject_text_fields(
     )
     fields = result.scalars().all()
     rejected: list[FilingTextField] = []
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     for f in fields:
         if f.status != TextFieldStatus.FILLED:
             continue

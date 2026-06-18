@@ -1,4 +1,4 @@
-"""API v1 — Internal Working document endpoints."""
+﻿"""API v1 — Internal Working document endpoints."""
 
 from uuid import UUID
 
@@ -90,7 +90,7 @@ async def confirm_internal_working_upload(
     validate_file_type(filename, content_type)
     validate_file_size(file_size)
 
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from app.config import settings
 
@@ -132,7 +132,7 @@ async def confirm_internal_working_upload(
         file_id=stored_file.id,
         label=label,
         uploaded_by=current_user.id,
-        uploaded_at=datetime.utcnow(),
+        uploaded_at=datetime.now(timezone.utc),
     )
     db.add(doc)
 
@@ -239,7 +239,7 @@ async def confirm_internal_working_replace(
     validate_file_type(filename, body.content_type)
     validate_file_size(body.file_size)
 
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from app.config import settings
 
@@ -287,7 +287,7 @@ async def confirm_internal_working_replace(
     db.add(new_stored_file)
     await db.flush()
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Mark the old row as superseded (DO NOT delete MinIO object)
     old_doc.superseded_at = now

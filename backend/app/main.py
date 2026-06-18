@@ -42,6 +42,8 @@ logger.setLevel(logging.DEBUG)
 # Quiet down noisy libraries (keep WARNING+)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 
 
 
@@ -470,6 +472,8 @@ async def _sync_new_columns():
         # Referral source
         ("client_profiles", "referral_source", "VARCHAR(50)", None),
         ("client_profiles", "referral_source_other", "TEXT", None),
+        # City (client's home city, entered at registration)
+        ("client_profiles", "city", "VARCHAR(100)", None),
         # Partner tag
         ("client_profiles", "partner_tag_id", "UUID", None),
         # Any Other income head description

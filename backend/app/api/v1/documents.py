@@ -492,7 +492,12 @@ async def get_document_upload_url(
     2. filing_id + document_type_id — create a NEW placeholder (additional file)
     """
     if body.document_id:
-        # Mode 1: existing placeholder
+        # Mode 1: existing placeholder — only clients upload to their own slots.
+        if current_user.role != UserRole.CLIENT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Staff cannot upload documents to existing placeholders.",
+            )
         doc_result = await db.execute(select(FilingDocument).where(FilingDocument.id == body.document_id))
         doc = doc_result.scalar_one_or_none()
         if not doc:
@@ -553,6 +558,77 @@ async def get_document_upload_url(
     )
 
 
+@router.post("/{document_id}/replace-url", response_model=DocumentUploadURLResponse)
+async def get_document_replace_url(
+    document_id: UUID,
+    filename: str = Query(...),
+    content_type: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a pre-signed PUT URL so a client can replace an existing document.
+
+    Available for any document that has not yet been approved (PENDING_UPLOAD,
+    UPLOADED, or REJECTED). Once approved the slot is locked — 403 is returned.
+    Works in both DOCUMENT_UPLOAD and PROCESSING filing phases.
+    Client role only.
+    """
+    if current_user.role != UserRole.CLIENT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only clients can replace documents.",
+        )
+
+    doc_result = await db.execute(select(FilingDocument).where(FilingDocument.id == document_id))
+    doc = doc_result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document placeholder not found")
+
+    filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == doc.filing_id))
+    filing = filing_result.scalar_one_or_none()
+    if not filing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing not found")
+
+    await enforce_filing_access(db, current_user, filing.client_id)
+
+    if filing.status not in (FilingStatus.DOCUMENT_UPLOAD, FilingStatus.PROCESSING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Document replacement is only allowed while the filing is in "
+                f"Document Upload or Processing phase. Current status: {filing.status.value}"
+            ),
+        )
+
+    if doc.status == DocumentStatus.APPROVED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This document has been approved and cannot be replaced.",
+        )
+
+    filename = sanitize_filename(filename)
+    validate_file_type(filename, content_type)
+
+    client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
+    client_user = client_user_result.scalar_one_or_none()
+
+    object_key = generate_object_key(
+        client_id=str(filing.client_id),
+        financial_year=filing.financial_year,
+        folder="documents_required",
+        filename=filename,
+        client_name=client_user.full_name if client_user else "",
+    )
+
+    upload_url = get_presigned_upload_url(object_key, content_type)
+
+    return DocumentUploadURLResponse(
+        upload_url=upload_url,
+        document_id=doc.id,
+        object_key=object_key,
+    )
+
+
 @router.post("/confirm-upload", response_model=FilingDocumentResponse)
 async def confirm_document_upload(
     document_id: UUID = Query(...),
@@ -602,12 +678,18 @@ async def confirm_document_upload(
                    f"Documents can only be uploaded when the filing is in DOCUMENT_UPLOAD or PROCESSING state.",
         )
 
-    # Only PENDING_UPLOAD or REJECTED docs can be uploaded to
-    if doc_placeholder.status not in (DocumentStatus.PENDING_UPLOAD, DocumentStatus.REJECTED):
+    # APPROVED documents are permanently locked.
+    # Clients can also replace UPLOADED documents (pre-approval replacement).
+    allowed_upload_statuses = {DocumentStatus.PENDING_UPLOAD, DocumentStatus.REJECTED}
+    if current_user.role == UserRole.CLIENT:
+        allowed_upload_statuses.add(DocumentStatus.UPLOADED)
+    if doc_placeholder.status not in allowed_upload_statuses:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot upload to this document: it is already '{doc_placeholder.status.value}'. "
-                   f"Only documents with 'PENDING_UPLOAD' or 'REJECTED' status accept uploads.",
+            detail=(
+                f"Cannot upload to this document: it is '{doc_placeholder.status.value}'. "
+                f"Approved documents cannot be replaced."
+            ),
         )
 
     # Reuse existing StoredFile if same bucket/object_key (idempotent retry)
@@ -638,6 +720,10 @@ async def confirm_document_upload(
 
     # Update document placeholder
     doc = await record_document_upload(db, document_id, stored_file.id, current_user.id)
+
+    # Clear stale rejection reason when client replaces a previously rejected doc
+    if doc.rejection_reason:
+        doc.rejection_reason = None
 
     # If the client is uploading but no Executive is assigned yet, alert
     # Partner + active Manager so they can staff the engagement. The filing

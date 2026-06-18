@@ -1,7 +1,7 @@
-"""Model: recovery_codes — Single-use recovery codes for password reset."""
+﻿"""Model: recovery_codes — Single-use recovery codes for password reset."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
@@ -22,4 +22,4 @@ class RecoveryCode(Base):
     code_hash = Column(String(255), nullable=False)
     is_used = Column(Boolean, nullable=False, default=False)
     used_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

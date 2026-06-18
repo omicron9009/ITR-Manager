@@ -1,4 +1,4 @@
-"""Model: master_text_field_type_income_heads — Junction mapping a text-field type to an income head + sub-category.
+﻿"""Model: master_text_field_type_income_heads — Junction mapping a text-field type to an income head + sub-category.
 
 Mirrors `master_doc_type_income_heads`. Allows text-field types to be categorized
 under one or more income heads (BASE or INCREMENTAL), so that BASE text-field
@@ -9,7 +9,7 @@ No mapping rows => the text-field type lives in the OTHERS bucket implicitly
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Enum, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
@@ -37,7 +37,7 @@ class MasterTextFieldTypeIncomeHead(Base):
         nullable=False,
         default=DocSubCategory.INCREMENTAL,
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     text_field_type = relationship(
         "MasterTextFieldType",

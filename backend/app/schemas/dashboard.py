@@ -44,6 +44,9 @@ class PendingVerificationItem(BaseModel):
     email: str
     phone_number: Optional[str] = None
     registered_at: datetime
+    referral_source: Optional[str] = None
+    referral_source_other: Optional[str] = None
+    city: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
