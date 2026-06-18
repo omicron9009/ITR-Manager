@@ -1,7 +1,7 @@
-"""Model: master_doc_type_income_heads — Junction mapping a doc type to an income head + sub-category."""
+﻿"""Model: master_doc_type_income_heads — Junction mapping a doc type to an income head + sub-category."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Enum, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
@@ -29,7 +29,7 @@ class MasterDocTypeIncomeHead(Base):
         nullable=False,
         default=DocSubCategory.INCREMENTAL,
     )
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     doc_type = relationship("MasterDocumentType", back_populates="income_head_mappings")
 

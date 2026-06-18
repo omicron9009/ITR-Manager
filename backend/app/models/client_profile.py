@@ -1,7 +1,7 @@
-"""Model: client_profiles — Extended client data from onboarding form."""
+﻿"""Model: client_profiles — Extended client data from onboarding form."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, Date, DateTime, Enum as SAEnum, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -21,6 +21,7 @@ class ClientProfile(Base):
     date_of_birth = Column(Date, nullable=True)
     contact_number = Column(String(15), nullable=True)
     address = Column(Text, nullable=True)
+    city = Column(String(100), nullable=True)
     income_type = Column(String(50), nullable=True)
     bank_account_details = Column(Text, nullable=True)
     professional_fee = Column(Numeric(10, 2), nullable=True)
@@ -28,11 +29,13 @@ class ClientProfile(Base):
     referral_source = Column(SAEnum(ReferralSource, name="referral_source"), nullable=True)
     referral_source_other = Column(Text, nullable=True)
     partner_tag_id = Column(UUID(as_uuid=True), ForeignKey("tags.id", ondelete="SET NULL"), nullable=True)
+    # WhatsApp opt-in (per-client; phone number is sourced from users.phone_number)
+    whatsapp_opt_in = Column(Boolean, nullable=False, server_default="true", default=True)
     form_data = Column(JSONB, nullable=False, default=dict)
     form_submitted_at = Column(DateTime(timezone=True), nullable=True)
     declaration_accepted_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     user = relationship("User", back_populates="client_profile")

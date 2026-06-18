@@ -1,6 +1,6 @@
-"""Service — Document management (placeholders, upload, review)."""
+﻿"""Service — Document management (placeholders, upload, review)."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -113,7 +113,7 @@ async def record_document_upload(
 
     doc.file_id = file_id
     doc.status = DocumentStatus.UPLOADED
-    doc.uploaded_at = datetime.utcnow()
+    doc.uploaded_at = datetime.now(timezone.utc)
 
     await record_audit_event(
         db=db,
@@ -161,7 +161,7 @@ async def approve_documents(
 
         doc.status = DocumentStatus.APPROVED
         doc.reviewed_by = reviewed_by
-        doc.reviewed_at = datetime.utcnow()
+        doc.reviewed_at = datetime.now(timezone.utc)
         approved.append(doc)
 
         await record_audit_event(
@@ -216,7 +216,7 @@ async def reject_documents(
         doc.status = DocumentStatus.REJECTED
         doc.rejection_reason = item["reason"]
         doc.reviewed_by = reviewed_by
-        doc.reviewed_at = datetime.utcnow()
+        doc.reviewed_at = datetime.now(timezone.utc)
         # Reset file_id so client must re-upload
         doc.file_id = None
         doc.uploaded_at = None

@@ -1,4 +1,4 @@
-"""API v1 — Audit log endpoints (Partner only)."""
+﻿"""API v1 — Audit log endpoints (Partner only)."""
 
 from typing import Optional
 from uuid import UUID
@@ -37,10 +37,10 @@ async def list_audit_logs(
     if event_type:
         query = query.where(AuditLog.event_type == event_type)
     if start_date:
-        from datetime import datetime
+        from datetime import datetime, timezone
         query = query.where(AuditLog.created_at >= datetime.fromisoformat(start_date))
     if end_date:
-        from datetime import datetime
+        from datetime import datetime, timezone
         query = query.where(AuditLog.created_at <= datetime.fromisoformat(end_date))
 
     # Count
@@ -102,10 +102,10 @@ async def generate_audit_report(
     if client_id:
         query = query.where(AuditLog.client_id == client_id)
     if start_date:
-        from datetime import datetime
+        from datetime import datetime, timezone
         query = query.where(AuditLog.created_at >= datetime.fromisoformat(start_date))
     if end_date:
-        from datetime import datetime
+        from datetime import datetime, timezone
         query = query.where(AuditLog.created_at <= datetime.fromisoformat(end_date))
 
     query = query.order_by(AuditLog.created_at.desc())
@@ -146,7 +146,7 @@ async def generate_audit_report(
     </head>
     <body>
         <h1>Audit Log Report</h1>
-        <p>Generated: {__import__('datetime').datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+        <p>Generated: {__import__('datetime').datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
         <p>Total Records: {len(logs)}</p>
         <table>
             <thead>

@@ -1,4 +1,4 @@
-"""Service — Tag management and tag-based analytics."""
+﻿"""Service — Tag management and tag-based analytics."""
 
 from uuid import UUID
 
@@ -597,8 +597,8 @@ async def assign_tag_to_manager(
             )
         existing.is_active = True
         existing.assigned_by = assigned_by
-        from datetime import datetime
-        existing.assigned_at = datetime.utcnow()
+        from datetime import datetime, timezone
+        existing.assigned_at = datetime.now(timezone.utc)
         await db.flush()
         return existing
 

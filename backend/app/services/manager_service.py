@@ -1,4 +1,4 @@
-"""Service — Manager management, team assignment, and scoped queries."""
+﻿"""Service — Manager management, team assignment, and scoped queries."""
 
 from uuid import UUID
 
@@ -108,8 +108,8 @@ async def assign_executive_to_manager(
     if prev:
         prev.is_active = True
         prev.assigned_by = assigned_by
-        from datetime import datetime
-        prev.assigned_at = datetime.utcnow()
+        from datetime import datetime, timezone
+        prev.assigned_at = datetime.now(timezone.utc)
         assignment = prev
     else:
         # Create new assignment
@@ -288,8 +288,8 @@ async def assign_client_to_manager(
     if prev:
         prev.is_active = True
         prev.assigned_by = assigned_by
-        from datetime import datetime
-        prev.assigned_at = datetime.utcnow()
+        from datetime import datetime, timezone
+        prev.assigned_at = datetime.now(timezone.utc)
         assignment = prev
     else:
         assignment = ManagerClientAssignment(
@@ -437,7 +437,7 @@ async def _transfer_executive_clients_to_manager(
     handled by that executive must have their ManagerClientAssignment
     updated to point to the new manager for data consistency.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
     import logging
     logger = logging.getLogger("app")
 
@@ -481,7 +481,7 @@ async def _transfer_executive_clients_to_manager(
             if not new_link.is_active:
                 new_link.is_active = True
                 new_link.assigned_by = transferred_by
-                new_link.assigned_at = datetime.utcnow()
+                new_link.assigned_at = datetime.now(timezone.utc)
                 transferred_count += 1
         else:
             # Create new manager-client assignment

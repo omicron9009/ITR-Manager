@@ -1,7 +1,7 @@
-"""Model: users — All system users (Partner, Executive, Client)."""
+﻿"""Model: users — All system users (Partner, Executive, Client)."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
@@ -31,8 +31,8 @@ class User(Base):
     recovery_codes_issued = Column(Boolean, nullable=False, default=False)
     activated_at = Column(DateTime(timezone=True), nullable=True)
     activated_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     pan_document = relationship("StoredFile", foreign_keys=[pan_document_id])

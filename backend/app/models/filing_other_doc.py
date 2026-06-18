@@ -1,7 +1,7 @@
-"""Model: filing_other_docs — Additional/miscellaneous documents uploaded by Executive/Partner."""
+﻿"""Model: filing_other_docs — Additional/miscellaneous documents uploaded by Executive/Partner."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
@@ -18,8 +18,8 @@ class FilingOtherDoc(Base):
     file_id = Column(UUID(as_uuid=True), ForeignKey("stored_files.id", ondelete="RESTRICT"), nullable=False)
     label = Column(String(255), nullable=True)  # Optional description (e.g. "Capital Gains Statement")
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     filing = relationship("ITRFiling", back_populates="other_docs")

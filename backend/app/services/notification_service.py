@@ -1,4 +1,4 @@
-"""Service — Notification creation and delivery."""
+﻿"""Service — Notification creation and delivery."""
 
 import asyncio
 import logging
@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Keep references to fire-and-forget email tasks to prevent GC
 _email_tasks: set = set()
+# Same pattern for WhatsApp delivery tasks
+_wa_tasks: set = set()
 
 
 async def _deliver_email_for_notification(
@@ -32,7 +34,7 @@ async def _deliver_email_for_notification(
     extra_details: Optional[dict] = None,
 ) -> None:
     """Fire-and-forget: send email using an independent DB session."""
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from app.database import AsyncSessionLocal
     from app.services.email_service import send_notification_email
@@ -56,11 +58,69 @@ async def _deliver_email_for_notification(
                 await db.execute(
                     update(Notification)
                     .where(Notification.id == notification_id)
-                    .values(email_sent=True, email_sent_at=datetime.utcnow())
+                    .values(email_sent=True, email_sent_at=datetime.now(timezone.utc))
                 )
                 await db.commit()
     except Exception as e:
         logger.warning(f"Background email delivery failed for notification {notification_id}: {e}")
+
+
+async def _deliver_whatsapp_for_notification(
+    notification_id: UUID,
+    phone_e164: str,
+    title: str,
+    message: str,
+    cta_label: Optional[str] = None,
+    action_url_path: Optional[str] = None,
+) -> None:
+    """Fire-and-forget: send WhatsApp message using an independent DB session.
+
+    Failures are swallowed and stored on the notification row — they must
+    never break the in-app/email path or the calling request.
+    """
+    from datetime import datetime, timezone
+
+    from app.config import settings
+    from app.database import AsyncSessionLocal
+    from app.services import whatsapp_service
+    from app.services.whatsapp_service import WhatsAppServiceError
+
+    body = whatsapp_service.format_whatsapp_body(
+        title=title,
+        message=message,
+        cta_label=cta_label,
+        action_url_path=action_url_path,
+        firm_name=settings.FIRM_NAME,
+    )
+
+    try:
+        async with AsyncSessionLocal() as db:
+            try:
+                result = await whatsapp_service.send_text(
+                    db, phone_e164=phone_e164, text=body
+                )
+            except WhatsAppServiceError as e:
+                await db.execute(
+                    update(Notification)
+                    .where(Notification.id == notification_id)
+                    .values(whatsapp_sent=False, whatsapp_error=str(e.detail)[:500])
+                )
+                await db.commit()
+                return
+            await db.execute(
+                update(Notification)
+                .where(Notification.id == notification_id)
+                .values(
+                    whatsapp_sent=True,
+                    whatsapp_sent_at=datetime.now(timezone.utc),
+                    whatsapp_message_id=result.get("message_id"),
+                )
+            )
+            await db.commit()
+    except Exception as e:
+        logger.warning(
+            f"Background WhatsApp delivery failed for notification {notification_id}: {e}"
+        )
 
 
 async def create_notification(
@@ -130,6 +190,51 @@ async def create_notification(
         except Exception as e:
             # Email failure must never block the notification creation
             logger.warning(f"Email task dispatch failed for notification {notification.id}: {e}")
+
+    # ── WhatsApp dispatch (CLIENT role only, opt-in based) ──
+    # Decoupled from NotificationChannel so every existing call site keeps
+    # working unchanged. Delivery only happens when:
+    #   1. Recipient is a CLIENT
+    #   2. Client has opt-in = true on their profile
+    #   3. Client has a phone_number on the user row (E.164)
+    #   4. WhatsApp config + session is `ready` (checked inside service)
+    try:
+        from app.enums import UserRole
+        from app.models.client_profile import ClientProfile
+
+        wa_lookup = await db.execute(
+            select(User.role, User.phone_number, ClientProfile.whatsapp_opt_in)
+            .outerjoin(ClientProfile, ClientProfile.user_id == User.id)
+            .where(User.id == user_id)
+        )
+        row = wa_lookup.first()
+        if row is not None:
+            user_role, phone_number, wa_opt_in = row
+            if phone_number:
+                from app.services import whatsapp_service
+                phone_number = whatsapp_service.normalize_to_e164(phone_number)
+            if (
+                user_role == UserRole.CLIENT
+                and bool(wa_opt_in)
+                and phone_number
+                and phone_number.startswith("+")
+            ):
+                wa_task = asyncio.create_task(
+                    _deliver_whatsapp_for_notification(
+                        notification_id=notification.id,
+                        phone_e164=phone_number,
+                        title=clean_title,
+                        message=clean_message,
+                        cta_label=cta_label,
+                        action_url_path=action_url_path,
+                    )
+                )
+                _wa_tasks.add(wa_task)
+                wa_task.add_done_callback(_wa_tasks.discard)
+    except Exception as e:
+        logger.warning(
+            f"WhatsApp task dispatch failed for notification {notification.id}: {e}"
+        )
 
     return notification
 

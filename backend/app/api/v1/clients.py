@@ -61,6 +61,7 @@ async def register_new_client(
         },
         referral_source=request_data.referral_source,
         referral_source_other=request_data.referral_source_other,
+        city=request_data.city,
     )
     return ClientRegistrationResponse(
         id=user.id,

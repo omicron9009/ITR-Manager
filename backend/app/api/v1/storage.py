@@ -1,4 +1,4 @@
-"""API v1 — Storage / file management endpoints."""
+﻿"""API v1 — Storage / file management endpoints."""
 
 from uuid import UUID
 
@@ -206,7 +206,10 @@ async def get_completed_doc_upload_url(
     """Get upload URL for ITR Acknowledgement or Invoice (Manager/Executive/Partner)."""
     filename = sanitize_filename(filename)
 
-    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
+    if doc_type == CompletedDocType.INVOICE:
+        if current_user.role != UserRole.PARTNER:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice upload is restricted to Partner")
+    elif current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     # Validate file type (skip for ITR_JSON which has its own validation)
@@ -259,7 +262,10 @@ async def confirm_completed_doc_upload(
     logger = logging.getLogger("app")
     filename = sanitize_filename(filename)
 
-    if current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
+    if doc_type == CompletedDocType.INVOICE:
+        if current_user.role != UserRole.PARTNER:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice upload is restricted to Partner")
+    elif current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     # Validate file type and size (skip for ITR_JSON which has its own validation)
@@ -274,7 +280,7 @@ async def confirm_completed_doc_upload(
     from app.services.notification_service import create_notification
     from app.services.audit_service import record_audit_event
     from app.enums import AuditEventType
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = filing_result.scalar_one_or_none()
@@ -367,7 +373,7 @@ async def confirm_completed_doc_upload(
         stored_file.content_type = content_type
         stored_file.file_size_bytes = file_size
         stored_file.uploaded_by = current_user.id
-        stored_file.uploaded_at = datetime.utcnow()
+        stored_file.uploaded_at = datetime.now(timezone.utc)
         logger.info(f"Reusing existing StoredFile {stored_file.id} for object_key={object_key}")
     else:
         stored_file = StoredFile(
@@ -393,7 +399,7 @@ async def confirm_completed_doc_upload(
     if existing_doc:
         existing_doc.file_id = stored_file.id
         existing_doc.uploaded_by = current_user.id
-        existing_doc.uploaded_at = datetime.utcnow()
+        existing_doc.uploaded_at = datetime.now(timezone.utc)
         existing_doc.status = CompletedDocStatus.UPLOADED
         # Reset approval fields on re-upload
         existing_doc.manager_approved_by = None
@@ -454,8 +460,9 @@ async def confirm_completed_doc_upload(
 
     # Check if all required completed docs are uploaded — notify manager for approval
     # FILING→PAYMENT transition now requires all docs to be PARTNER_APPROVED (handled in approval endpoints)
+    # INVOICE is excluded here: it is uploaded by Partner and approved directly by Partner without manager involvement.
     if filing.status == FilingStatus.FILING:
-        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.INVOICE, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
+        required_doc_types = {CompletedDocType.ITR_ACKNOWLEDGEMENT, CompletedDocType.ITR_JSON, CompletedDocType.ITR_FORM, CompletedDocType.TAX_PAID_COMPUTATION}
         existing_docs_result = await db.execute(
             select(FilingCompletedDoc.doc_type).where(FilingCompletedDoc.filing_id == filing_id)
         )
@@ -575,7 +582,7 @@ async def manager_approve_completed_doc(
     db: AsyncSession = Depends(get_db),
 ):
     """Manager/Partner approves a completed doc: UPLOADED → MANAGER_APPROVED."""
-    from datetime import datetime
+    from datetime import datetime, timezone
     from app.services.audit_service import record_audit_event
     from app.enums import AuditEventType
     from app.services.notification_service import create_notification
@@ -592,6 +599,12 @@ async def manager_approve_completed_doc(
 
     await enforce_client_access(db, current_user, filing.client_id)
 
+    if doc.doc_type == CompletedDocType.INVOICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invoice approval is reserved for Partner only",
+        )
+
     if doc.status != CompletedDocStatus.UPLOADED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -600,7 +613,7 @@ async def manager_approve_completed_doc(
 
     doc.status = CompletedDocStatus.MANAGER_APPROVED
     doc.manager_approved_by = current_user.id
-    doc.manager_approved_at = datetime.utcnow()
+    doc.manager_approved_at = datetime.now(timezone.utc)
 
     await record_audit_event(
         db=db,
@@ -640,7 +653,7 @@ async def partner_approve_completed_doc(
     """Partner approves a completed doc: UPLOADED/MANAGER_APPROVED → PARTNER_APPROVED.
     Partner can bypass manager approval.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
     from app.services.audit_service import record_audit_event
     from app.services.filing_service import transition_filing_status
     from app.services.notification_service import create_notification
@@ -669,7 +682,7 @@ async def partner_approve_completed_doc(
 
     doc.status = CompletedDocStatus.PARTNER_APPROVED
     doc.partner_approved_by = current_user.id
-    doc.partner_approved_at = datetime.utcnow()
+    doc.partner_approved_at = datetime.now(timezone.utc)
 
     await record_audit_event(
         db=db,
@@ -709,8 +722,8 @@ async def partner_approve_completed_doc(
 
             # For no-fee clients, auto-complete immediately (PAYMENT → COMPLETED)
             if filing.no_fees_applicable:
-                from datetime import datetime as _dt
-                filing.payment_received_at = _dt.utcnow()
+                from datetime import datetime, timezone
+                filing.payment_received_at = datetime.now(timezone.utc)
                 await transition_filing_status(
                     db=db,
                     filing=filing,
@@ -747,7 +760,7 @@ async def manager_reject_completed_doc(
     db: AsyncSession = Depends(get_db),
 ):
     """Manager/Partner rejects a completed doc: UPLOADED → MANAGER_REJECTED (staff re-uploads)."""
-    from datetime import datetime
+    from datetime import datetime, timezone
     from app.services.audit_service import record_audit_event
     from app.services.notification_service import create_notification
     from app.enums import AuditEventType
@@ -764,6 +777,12 @@ async def manager_reject_completed_doc(
 
     await enforce_client_access(db, current_user, filing.client_id)
 
+    if doc.doc_type == CompletedDocType.INVOICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invoice management is reserved for Partner only",
+        )
+
     if doc.status != CompletedDocStatus.UPLOADED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -772,7 +791,7 @@ async def manager_reject_completed_doc(
 
     doc.status = CompletedDocStatus.MANAGER_REJECTED
     doc.manager_rejected_by = current_user.id
-    doc.manager_rejected_at = datetime.utcnow()
+    doc.manager_rejected_at = datetime.now(timezone.utc)
     doc.rejection_reason = reason
 
     await record_audit_event(
@@ -822,6 +841,8 @@ async def get_file_download_url(
         )
         completed_doc = doc_result.scalar_one_or_none()
         if completed_doc:
+            if completed_doc.doc_type == CompletedDocType.INVOICE and current_user.role not in (UserRole.PARTNER, UserRole.CLIENT):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice download is restricted to Partner")
             file_result = await db.execute(select(StoredFile).where(StoredFile.id == completed_doc.file_id))
             stored_file = file_result.scalar_one_or_none()
 
@@ -942,7 +963,7 @@ async def confirm_other_doc_upload(
     from app.models.filing_other_doc import FilingOtherDoc
     from app.services.audit_service import record_audit_event
     from app.enums import AuditEventType
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = filing_result.scalar_one_or_none()
@@ -983,7 +1004,7 @@ async def confirm_other_doc_upload(
         stored_file.content_type = content_type
         stored_file.file_size_bytes = file_size
         stored_file.uploaded_by = current_user.id
-        stored_file.uploaded_at = datetime.utcnow()
+        stored_file.uploaded_at = datetime.now(timezone.utc)
     else:
         stored_file = StoredFile(
             bucket=settings.MINIO_BUCKET_NAME,

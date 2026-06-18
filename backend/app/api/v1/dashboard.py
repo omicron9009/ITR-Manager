@@ -335,12 +335,15 @@ async def get_pending_verifications(
 ):
     """Get list of clients awaiting verification (Partner only)."""
     result = await db.execute(
-        select(User).where(
+        select(User, ClientProfile.referral_source, ClientProfile.referral_source_other, ClientProfile.city)
+        .outerjoin(ClientProfile, ClientProfile.user_id == User.id)
+        .where(
             User.role == UserRole.CLIENT,
             User.account_status == AccountStatus.PENDING_VERIFICATION,
-        ).order_by(User.created_at.desc())
+        )
+        .order_by(User.created_at.desc())
     )
-    clients = result.scalars().all()
+    rows = result.all()
 
     items = [
         PendingVerificationItem(
@@ -349,8 +352,11 @@ async def get_pending_verifications(
             email=c.email,
             phone_number=c.phone_number,
             registered_at=c.created_at,
+            referral_source=ref_source.value if ref_source else None,
+            referral_source_other=ref_other,
+            city=city,
         )
-        for c in clients
+        for c, ref_source, ref_other, city in rows
     ]
 
     return PendingVerificationResponse(items=items, total=len(items))
@@ -743,93 +749,118 @@ async def get_partner_analytics(
     halted_filings = filing_status_map.get("HALTED", 0)
     active_filings = total_filings - completed_filings - halted_filings
 
-    # ── Filing status breakdown with client details ──
+    # ── Filing status breakdown with client details (batch) ──
+    from collections import defaultdict
+    all_status_filings_result = await db.execute(
+        select(ITRFiling).order_by(ITRFiling.updated_at.desc())
+    )
+    all_status_filings = all_status_filings_result.scalars().all()
+    _sb_user_ids = set()
+    for _f in all_status_filings:
+        _sb_user_ids.add(_f.client_id)
+        if _f.assigned_executive_id:
+            _sb_user_ids.add(_f.assigned_executive_id)
+    if _sb_user_ids:
+        _sb_names_result = await db.execute(select(User.id, User.full_name).where(User.id.in_(_sb_user_ids)))
+        _sb_names = {row.id: row.full_name for row in _sb_names_result.all()}
+    else:
+        _sb_names = {}
+    _by_status: dict = defaultdict(list)
+    for _f in all_status_filings:
+        _by_status[_f.status].append(_f)
     filing_status_breakdown = []
     for fs in FilingStatus:
-        filings_result = await db.execute(
-            select(ITRFiling).where(ITRFiling.status == fs)
-            .order_by(ITRFiling.updated_at.desc()).limit(50)
-        )
-        filings_list = filings_result.scalars().all()
-        clients_info = []
-        for f in filings_list:
-            c_result = await db.execute(select(User.full_name).where(User.id == f.client_id))
-            c_name = c_result.scalar() or "Unknown"
-            e_name = None
-            if f.assigned_executive_id:
-                e_result = await db.execute(select(User.full_name).where(User.id == f.assigned_executive_id))
-                e_name = e_result.scalar()
-            clients_info.append(FilingStatusClientInfo(
-                client_id=f.client_id,
-                client_name=c_name,
-                financial_year=f.financial_year,
-                assigned_executive=e_name,
-                last_updated=f.updated_at,
-            ))
+        _filings_slice = _by_status[fs][:50]
         filing_status_breakdown.append(FilingStatusBreakdown(
             status=fs.value,
             count=filing_status_map.get(fs.value, 0),
-            clients=clients_info,
+            clients=[
+                FilingStatusClientInfo(
+                    client_id=_f.client_id,
+                    client_name=_sb_names.get(_f.client_id, "Unknown"),
+                    financial_year=_f.financial_year,
+                    assigned_executive=_sb_names.get(_f.assigned_executive_id) if _f.assigned_executive_id else None,
+                    last_updated=_f.updated_at,
+                )
+                for _f in _filings_slice
+            ],
         ))
 
-    # ── Executive → Client mapping ──
+    # ── Executive → Client mapping (batch) ──
     exec_result = await db.execute(
         select(User).where(User.role == UserRole.EXECUTIVE).order_by(User.full_name)
     )
     executives = exec_result.scalars().all()
 
     executive_client_mapping = []
-    for ex in executives:
-        assign_result = await db.execute(
+    if executives:
+        _exec_ids = [ex.id for ex in executives]
+        _all_assign_result = await db.execute(
             select(ExecutiveClientAssignment).where(
-                ExecutiveClientAssignment.executive_id == ex.id,
+                ExecutiveClientAssignment.executive_id.in_(_exec_ids),
                 ExecutiveClientAssignment.is_active == True,
             )
         )
-        assignments = assign_result.scalars().all()
-        clients_list = []
-        for a in assignments:
-            cl_result = await db.execute(select(User).where(User.id == a.client_id))
-            cl = cl_result.scalar_one_or_none()
-            if cl:
-                fl_result = await db.execute(
-                    select(ITRFiling).where(
-                        ITRFiling.client_id == cl.id,
-                        ITRFiling.status.notin_([FilingStatus.COMPLETED, FilingStatus.HALTED]),
-                    ).order_by(ITRFiling.updated_at.desc()).limit(1)
+        _all_assignments = _all_assign_result.scalars().all()
+        _assign_by_exec: dict = defaultdict(list)
+        for _a in _all_assignments:
+            _assign_by_exec[_a.executive_id].append(_a)
+        _all_client_ids = {_a.client_id for _a in _all_assignments}
+        if _all_client_ids:
+            _clients_result = await db.execute(select(User).where(User.id.in_(_all_client_ids)))
+            _clients_map = {c.id: c for c in _clients_result.scalars().all()}
+            _latest_filings_result = await db.execute(
+                select(ITRFiling)
+                .where(
+                    ITRFiling.client_id.in_(_all_client_ids),
+                    ITRFiling.status.notin_([FilingStatus.COMPLETED, FilingStatus.HALTED]),
                 )
-                fl = fl_result.scalar_one_or_none()
-                clients_list.append(ExecutiveClientInfo(
-                    client_id=cl.id,
-                    client_name=cl.full_name,
-                    client_email=cl.email,
-                    filing_status=fl.status.value if fl else None,
-                    financial_year=fl.financial_year if fl else None,
-                ))
-
-        exec_active_result = await db.execute(
-            select(func.count()).select_from(ITRFiling).where(
-                ITRFiling.assigned_executive_id == ex.id,
-                ITRFiling.status.notin_([FilingStatus.COMPLETED, FilingStatus.HALTED]),
+                .distinct(ITRFiling.client_id)
+                .order_by(ITRFiling.client_id, ITRFiling.updated_at.desc())
             )
-        )
-        exec_completed_result = await db.execute(
-            select(func.count()).select_from(ITRFiling).where(
-                ITRFiling.assigned_executive_id == ex.id,
-                ITRFiling.status == FilingStatus.COMPLETED,
+            _latest_filing_map = {f.client_id: f for f in _latest_filings_result.scalars().all()}
+        else:
+            _clients_map = {}
+            _latest_filing_map = {}
+        _exec_counts_result = await db.execute(
+            select(
+                ITRFiling.assigned_executive_id,
+                func.count(ITRFiling.id).filter(
+                    ITRFiling.status.notin_([FilingStatus.COMPLETED, FilingStatus.HALTED])
+                ).label("active"),
+                func.count(ITRFiling.id).filter(
+                    ITRFiling.status == FilingStatus.COMPLETED
+                ).label("completed"),
             )
+            .where(ITRFiling.assigned_executive_id.in_(_exec_ids))
+            .group_by(ITRFiling.assigned_executive_id)
         )
-
-        executive_client_mapping.append(ExecutiveClientDetail(
-            executive_id=ex.id,
-            executive_name=ex.full_name,
-            executive_email=ex.email,
-            is_active=ex.is_active,
-            clients=clients_list,
-            total_clients=len(clients_list),
-            active_filings=exec_active_result.scalar() or 0,
-            completed_filings=exec_completed_result.scalar() or 0,
-        ))
+        _exec_counts_map = {row.assigned_executive_id: (row.active or 0, row.completed or 0) for row in _exec_counts_result.all()}
+        for ex in executives:
+            _ex_assignments = _assign_by_exec.get(ex.id, [])
+            _clients_list = []
+            for _a in _ex_assignments:
+                _cl = _clients_map.get(_a.client_id)
+                if _cl:
+                    _fl = _latest_filing_map.get(_cl.id)
+                    _clients_list.append(ExecutiveClientInfo(
+                        client_id=_cl.id,
+                        client_name=_cl.full_name,
+                        client_email=_cl.email,
+                        filing_status=_fl.status.value if _fl else None,
+                        financial_year=_fl.financial_year if _fl else None,
+                    ))
+            _active_c, _completed_c = _exec_counts_map.get(ex.id, (0, 0))
+            executive_client_mapping.append(ExecutiveClientDetail(
+                executive_id=ex.id,
+                executive_name=ex.full_name,
+                executive_email=ex.email,
+                is_active=ex.is_active,
+                clients=_clients_list,
+                total_clients=len(_clients_list),
+                active_filings=_active_c,
+                completed_filings=_completed_c,
+            ))
 
     # ── Unassigned clients ──
     assigned_ids_result = await db.execute(
@@ -905,25 +936,31 @@ async def get_partner_analytics(
     )
     avg_days_computation = avg_computation_result.scalar()
 
-    # ── Recent filings (last 10 state changes) ──
+    # ── Recent filings (last 10 state changes, batch) ──
     recent_result = await db.execute(
         select(ITRFiling).order_by(ITRFiling.updated_at.desc()).limit(10)
     )
-    recent_filings = []
-    for f in recent_result.scalars().all():
-        c_result = await db.execute(select(User.full_name).where(User.id == f.client_id))
-        c_name = c_result.scalar() or "Unknown"
-        e_name = None
-        if f.assigned_executive_id:
-            e_result = await db.execute(select(User.full_name).where(User.id == f.assigned_executive_id))
-            e_name = e_result.scalar()
-        recent_filings.append(FilingStatusClientInfo(
-            client_id=f.client_id,
-            client_name=c_name,
-            financial_year=f.financial_year,
-            assigned_executive=e_name,
-            last_updated=f.updated_at,
-        ))
+    _recent_list = recent_result.scalars().all()
+    _recent_ids: set = set()
+    for _f in _recent_list:
+        _recent_ids.add(_f.client_id)
+        if _f.assigned_executive_id:
+            _recent_ids.add(_f.assigned_executive_id)
+    if _recent_ids:
+        _recent_names_result = await db.execute(select(User.id, User.full_name).where(User.id.in_(_recent_ids)))
+        _recent_names = {row.id: row.full_name for row in _recent_names_result.all()}
+    else:
+        _recent_names = {}
+    recent_filings = [
+        FilingStatusClientInfo(
+            client_id=_f.client_id,
+            client_name=_recent_names.get(_f.client_id, "Unknown"),
+            financial_year=_f.financial_year,
+            assigned_executive=_recent_names.get(_f.assigned_executive_id) if _f.assigned_executive_id else None,
+            last_updated=_f.updated_at,
+        )
+        for _f in _recent_list
+    ]
 
     return PartnerAnalyticsResponse(
         total_clients=total_clients,
@@ -967,18 +1004,28 @@ async def get_executive_analytics(
     )
     assignments = assign_result.scalars().all()
 
+    _ex_client_ids = [a.client_id for a in assignments]
+    if _ex_client_ids:
+        _ex_clients_result = await db.execute(select(User).where(User.id.in_(_ex_client_ids)))
+        _ex_clients_map = {c.id: c for c in _ex_clients_result.scalars().all()}
+        _ex_latest_result = await db.execute(
+            select(ITRFiling)
+            .where(
+                ITRFiling.client_id.in_(_ex_client_ids),
+                ITRFiling.status.notin_([FilingStatus.COMPLETED, FilingStatus.HALTED]),
+            )
+            .distinct(ITRFiling.client_id)
+            .order_by(ITRFiling.client_id, ITRFiling.updated_at.desc())
+        )
+        _ex_latest_map = {f.client_id: f for f in _ex_latest_result.scalars().all()}
+    else:
+        _ex_clients_map = {}
+        _ex_latest_map = {}
     clients_list = []
     for a in assignments:
-        cl_result = await db.execute(select(User).where(User.id == a.client_id))
-        cl = cl_result.scalar_one_or_none()
+        cl = _ex_clients_map.get(a.client_id)
         if cl:
-            fl_result = await db.execute(
-                select(ITRFiling).where(
-                    ITRFiling.client_id == cl.id,
-                    ITRFiling.status.notin_([FilingStatus.COMPLETED, FilingStatus.HALTED]),
-                ).order_by(ITRFiling.updated_at.desc()).limit(1)
-            )
-            fl = fl_result.scalar_one_or_none()
+            fl = _ex_latest_map.get(cl.id)
             clients_list.append(ExecutiveClientInfo(
                 client_id=cl.id,
                 client_name=cl.full_name,
@@ -999,31 +1046,39 @@ async def get_executive_analytics(
     halted_filings = filing_status_map.get("HALTED", 0)
     active_filings = total_filings - completed_filings - halted_filings
 
-    # ── Filing status breakdown with client details ──
+    # ── Filing status breakdown with client details (batch) ──
+    from collections import defaultdict
+    _ex_all_filings_result = await db.execute(
+        select(ITRFiling).where(ITRFiling.assigned_executive_id == executive_id)
+        .order_by(ITRFiling.updated_at.desc())
+    )
+    _ex_all_filings = _ex_all_filings_result.scalars().all()
+    _ex_filing_client_ids = {_f.client_id for _f in _ex_all_filings}
+    if _ex_filing_client_ids:
+        _ex_filing_names_result = await db.execute(
+            select(User.id, User.full_name).where(User.id.in_(_ex_filing_client_ids))
+        )
+        _ex_filing_names = {row.id: row.full_name for row in _ex_filing_names_result.all()}
+    else:
+        _ex_filing_names = {}
+    _ex_by_status: dict = defaultdict(list)
+    for _f in _ex_all_filings:
+        _ex_by_status[_f.status].append(_f)
     filing_status_breakdown = []
     for fs in FilingStatus:
-        filings_result = await db.execute(
-            select(ITRFiling).where(
-                ITRFiling.status == fs,
-                ITRFiling.assigned_executive_id == executive_id,
-            ).order_by(ITRFiling.updated_at.desc()).limit(50)
-        )
-        filings_list = filings_result.scalars().all()
-        clients_info = []
-        for f in filings_list:
-            c_result = await db.execute(select(User.full_name).where(User.id == f.client_id))
-            c_name = c_result.scalar() or "Unknown"
-            clients_info.append(FilingStatusClientInfo(
-                client_id=f.client_id,
-                client_name=c_name,
-                financial_year=f.financial_year,
-                assigned_executive=current_user.full_name,
-                last_updated=f.updated_at,
-            ))
         filing_status_breakdown.append(FilingStatusBreakdown(
             status=fs.value,
             count=filing_status_map.get(fs.value, 0),
-            clients=clients_info,
+            clients=[
+                FilingStatusClientInfo(
+                    client_id=_f.client_id,
+                    client_name=_ex_filing_names.get(_f.client_id, "Unknown"),
+                    financial_year=_f.financial_year,
+                    assigned_executive=current_user.full_name,
+                    last_updated=_f.updated_at,
+                )
+                for _f in _ex_by_status[fs][:50]
+            ],
         ))
 
     # ── FY Distribution (scoped) ──
@@ -1083,22 +1138,18 @@ async def get_executive_analytics(
     )
     doc_stats = doc_stats_result.one()
 
-    # ── Recent filings (last 10) ──
-    recent_result = await db.execute(
-        select(ITRFiling).where(ITRFiling.assigned_executive_id == executive_id)
-        .order_by(ITRFiling.updated_at.desc()).limit(10)
-    )
-    recent_filings = []
-    for f in recent_result.scalars().all():
-        c_result = await db.execute(select(User.full_name).where(User.id == f.client_id))
-        c_name = c_result.scalar() or "Unknown"
-        recent_filings.append(FilingStatusClientInfo(
-            client_id=f.client_id,
-            client_name=c_name,
-            financial_year=f.financial_year,
+    # ── Recent filings (last 10, batch) ──
+    _ex_recent_list = sorted(_ex_all_filings, key=lambda x: x.updated_at, reverse=True)[:10]
+    recent_filings = [
+        FilingStatusClientInfo(
+            client_id=_f.client_id,
+            client_name=_ex_filing_names.get(_f.client_id, "Unknown"),
+            financial_year=_f.financial_year,
             assigned_executive=current_user.full_name,
-            last_updated=f.updated_at,
-        ))
+            last_updated=_f.updated_at,
+        )
+        for _f in _ex_recent_list
+    ]
 
     return ExecutiveAnalyticsResponse(
         executive_name=current_user.full_name,
@@ -1176,8 +1227,10 @@ async def get_client_analytics(
 
         days_since = 0
         if f.initiated_at:
-            initiated_naive = f.initiated_at.replace(tzinfo=None) if f.initiated_at.tzinfo else f.initiated_at
-            days_since = (dt.utcnow() - initiated_naive).days
+            from datetime import timezone as _tz
+            _now = dt.now(_tz.utc)
+            _initiated = f.initiated_at if f.initiated_at.tzinfo else f.initiated_at.replace(tzinfo=_tz.utc)
+            days_since = (_now - _initiated).days
 
         filing_details.append(ClientFilingDetail(
             filing_id=f.id,

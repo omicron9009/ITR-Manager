@@ -1,7 +1,7 @@
-"""Model: filing_completed_docs — ITR Acknowledgement and Invoice documents."""
+﻿"""Model: filing_completed_docs — ITR Acknowledgement and Invoice documents."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
@@ -24,8 +24,8 @@ class FilingCompletedDoc(Base):
         default=CompletedDocStatus.UPLOADED,
     )
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    uploaded_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # Manager approval
     manager_approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

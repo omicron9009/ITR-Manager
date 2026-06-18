@@ -49,16 +49,25 @@ def ensure_bucket_exists():
     if not client.bucket_exists(settings.MINIO_BUCKET_NAME):
         client.make_bucket(settings.MINIO_BUCKET_NAME)
 
-    # Enable SSE-S3 auto-encryption if KMS is configured
-    try:
-        from minio.sseconfig import Rule, SSEConfig
-        client.set_bucket_encryption(
-            settings.MINIO_BUCKET_NAME,
-            SSEConfig(Rule.new_sse_s3_rule()),
-        )
-    except Exception:
-        # KMS not configured or MinIO version doesn't support it — skip silently
-        pass
+    # Enable SSE-S3 auto-encryption only when MINIO_KMS_SECRET_KEY is configured.
+    # Without it the MinIO server has no KMS and every put_object will fail with
+    # "NotImplemented: Server side encryption specified but KMS is not configured".
+    if settings.MINIO_KMS_SECRET_KEY:
+        try:
+            from minio.sseconfig import Rule, SSEConfig
+            client.set_bucket_encryption(
+                settings.MINIO_BUCKET_NAME,
+                SSEConfig(Rule.new_sse_s3_rule()),
+            )
+        except Exception:
+            pass
+    else:
+        # Actively clear any stale SSE policy left over from a previous run so
+        # uploads don't fail when this MinIO instance has no KMS configured.
+        try:
+            client.delete_bucket_encryption(settings.MINIO_BUCKET_NAME)
+        except Exception:
+            pass
 
     # Set CORS policy so browsers can fetch presigned URLs cross-origin
     try:

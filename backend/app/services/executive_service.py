@@ -1,6 +1,6 @@
-"""Service — Executive management and assignment."""
+﻿"""Service — Executive management and assignment."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -109,7 +109,7 @@ async def assign_executive_to_client(
     current = existing.scalar_one_or_none()
     if current:
         current.is_active = False
-        current.unassigned_at = datetime.utcnow()
+        current.unassigned_at = datetime.now(timezone.utc)
 
         await record_audit_event(
             db=db,

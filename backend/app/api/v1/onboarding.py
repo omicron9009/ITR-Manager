@@ -1,6 +1,6 @@
-"""API v1 — Onboarding form builder and submission."""
+﻿"""API v1 — Onboarding form builder and submission."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -432,7 +432,7 @@ async def submit_onboarding_form(
 
     # Update profile with form data
     profile.form_data = body.form_data
-    profile.form_submitted_at = datetime.utcnow()
+    profile.form_submitted_at = datetime.now(timezone.utc)
 
     # Extract key fields if present
     if "pan_number" in body.form_data:

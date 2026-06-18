@@ -1,6 +1,6 @@
-"""Service — Client management (registration, activation, profile)."""
+﻿"""Service — Client management (registration, activation, profile)."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -26,6 +26,7 @@ async def register_client(
     income_heads: Optional[dict] = None,
     referral_source: Optional[str] = None,
     referral_source_other: Optional[str] = None,
+    city: Optional[str] = None,
 ) -> User:
     """Register a new client. Account starts in PENDING_VERIFICATION."""
     # Check if email already exists
@@ -49,12 +50,13 @@ async def register_client(
     await db.flush()
 
     # Create empty client profile with declaration timestamp
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     profile = ClientProfile(
         user_id=user.id,
         declaration_accepted_at=now,
         referral_source=referral_source,
         referral_source_other=referral_source_other,
+        city=city,
     )
     db.add(profile)
 
@@ -132,7 +134,7 @@ async def activate_client(
 
     client.account_status = AccountStatus.ACTIVE
     client.is_active = True
-    client.activated_at = datetime.utcnow()
+    client.activated_at = datetime.now(timezone.utc)
     client.activated_by = activated_by
 
     # Store professional fee and no_fees_applicable on profile if provided

@@ -1,7 +1,7 @@
-"""Model: itr_filings — Core transaction table, one record per client per FY."""
+﻿"""Model: itr_filings — Core transaction table, one record per client per FY."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -21,7 +21,7 @@ class ITRFiling(Base):
     assigned_executive_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     # Milestone timestamps
-    initiated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    initiated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     onboarding_completed_at = Column(DateTime(timezone=True), nullable=True)
     documents_submitted_at = Column(DateTime(timezone=True), nullable=True)
     documents_approved_at = Column(DateTime(timezone=True), nullable=True)
@@ -56,8 +56,8 @@ class ITRFiling(Base):
     # Audit columns
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     updated_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     client = relationship("User", foreign_keys=[client_id], back_populates="filings")

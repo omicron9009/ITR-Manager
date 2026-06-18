@@ -42,6 +42,8 @@ logger.setLevel(logging.DEBUG)
 # Quiet down noisy libraries (keep WARNING+)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 
 
 
@@ -50,12 +52,14 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     # ── Startup ──
     await _ensure_database_exists()
+    await _ensure_openwa_database_exists()
     await _create_tables()
     await _ensure_perf_indexes()
     await _seed_admin_user()
     await _seed_dashboard_user()
     await init_cache()
-    
+    await _auto_bootstrap_whatsapp()
+    await _backfill_whatsapp_opt_in()
 
     try:
         from app.services.storage_service import ensure_bucket_exists
@@ -202,6 +206,42 @@ async def _ensure_database_exists():
     except Exception as e:
         logger.warning(f"Database auto-creation skipped: {e}")
         logger.warning("Ensure the database exists manually if this is first run.")
+
+
+async def _ensure_openwa_database_exists():
+    """Create the `openwa` database used by the OpenWA gateway, if missing.
+
+    OpenWA owns its own schema in a separate database on the same Postgres
+    cluster. We create the DB here on startup so a fresh deploy boots cleanly
+    without any manual SQL — same approach as `_ensure_database_exists`.
+    """
+    import asyncpg
+
+    target_db = "openwa"
+    try:
+        conn = await asyncpg.connect(
+            host=settings.POSTGRES_HOST,
+            port=settings.POSTGRES_PORT,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            database="postgres",
+        )
+
+        exists = await conn.fetchval(
+            "SELECT 1 FROM pg_database WHERE datname = $1",
+            target_db,
+        )
+
+        if not exists:
+            # CREATE DATABASE cannot run inside a transaction
+            await conn.execute(f'CREATE DATABASE "{target_db}"')
+            logger.info(f"Database '{target_db}' (OpenWA) created successfully.")
+        else:
+            logger.info(f"Database '{target_db}' (OpenWA) already exists.")
+
+        await conn.close()
+    except Exception as e:
+        logger.warning(f"OpenWA database auto-creation skipped: {e}")
 
 
 async def _create_tables():
@@ -432,6 +472,8 @@ async def _sync_new_columns():
         # Referral source
         ("client_profiles", "referral_source", "VARCHAR(50)", None),
         ("client_profiles", "referral_source_other", "TEXT", None),
+        # City (client's home city, entered at registration)
+        ("client_profiles", "city", "VARCHAR(100)", None),
         # Partner tag
         ("client_profiles", "partner_tag_id", "UUID", None),
         # Any Other income head description
@@ -439,6 +481,13 @@ async def _sync_new_columns():
         # Internal working doc versioning (replace-without-delete)
         ("internal_working_docs", "replaces_id", "UUID", None),
         ("internal_working_docs", "superseded_at", "TIMESTAMPTZ", None),
+        # WhatsApp delivery tracking on notifications
+        ("notifications", "whatsapp_sent", "BOOLEAN NOT NULL", "'false'"),
+        ("notifications", "whatsapp_sent_at", "TIMESTAMPTZ", None),
+        ("notifications", "whatsapp_message_id", "VARCHAR(120)", None),
+        ("notifications", "whatsapp_error", "TEXT", None),
+        # WhatsApp opt-in flag on client profiles
+        ("client_profiles", "whatsapp_opt_in", "BOOLEAN NOT NULL", "'true'"),
     ]
 
     try:
@@ -1022,3 +1071,83 @@ async def _seed_dashboard_user():
             logger.info(f"Dashboard user created: {settings.DASHBOARD_USER_EMAIL}")
     except Exception as e:
         logger.warning(f"Dashboard user seed skipped: {e}")
+
+
+async def _auto_bootstrap_whatsapp():
+    """If WHATSAPP_OPENWA_MASTER_KEY is set and no WhatsApp config exists,
+    call OpenWA to create a per-app API key and persist it encrypted to the DB.
+    Fails open (logs warning) if OpenWA is unreachable or the key is invalid.
+    """
+    if not settings.WHATSAPP_OPENWA_MASTER_KEY:
+        logger.info("WHATSAPP_OPENWA_MASTER_KEY not set — skipping WhatsApp auto-bootstrap.")
+        return
+
+    import httpx
+    from sqlalchemy import select
+    from app.database import AsyncSessionLocal
+    from app.models.whatsapp_config import WhatsAppConfig
+    from app.services.whatsapp_service import encrypt_api_key
+
+    try:
+        async with AsyncSessionLocal() as db:
+            existing = (await db.execute(select(WhatsAppConfig))).scalar_one_or_none()
+            if existing:
+                logger.info("WhatsApp config already exists — skipping auto-bootstrap.")
+                return
+
+        base_url = settings.WHATSAPP_DEFAULT_BASE_URL.rstrip("/")
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{base_url}/api/auth/api-keys",
+                headers={
+                    "X-API-Key": settings.WHATSAPP_OPENWA_MASTER_KEY,
+                    "Content-Type": "application/json",
+                },
+                json={"name": settings.WHATSAPP_DEFAULT_SESSION_NAME, "role": "operator"},
+            )
+            resp.raise_for_status()
+            plain_api_key = resp.json()["apiKey"]
+
+        async with AsyncSessionLocal() as db:
+            # Second check: guard against race between uvicorn workers
+            existing = (await db.execute(select(WhatsAppConfig))).scalar_one_or_none()
+            if existing:
+                logger.info("WhatsApp config created by another worker — skipping.")
+                return
+
+            cfg = WhatsAppConfig(
+                openwa_base_url=base_url,
+                api_key_encrypted=encrypt_api_key(plain_api_key),
+                session_name=settings.WHATSAPP_DEFAULT_SESSION_NAME,
+                session_status="created",
+                configured_by=None,
+            )
+            db.add(cfg)
+            await db.commit()
+            logger.info("WhatsApp auto-bootstrap complete — per-app API key created and stored.")
+
+    except Exception as e:
+        logger.warning(f"WhatsApp auto-bootstrap skipped: {e}")
+
+
+async def _backfill_whatsapp_opt_in():
+    """One-time migration: set whatsapp_opt_in = true for all existing client profiles
+    that still have the old default of false. New profiles already default to true.
+    Fails open — a warning is logged but startup is never blocked.
+    """
+    from app.database import AsyncSessionLocal
+    from app.models.client_profile import ClientProfile
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                ClientProfile.__table__.update()
+                .where(ClientProfile.__table__.c.whatsapp_opt_in == False)
+                .values(whatsapp_opt_in=True)
+            )
+            updated = result.rowcount
+            await db.commit()
+            if updated:
+                logger.info(f"WhatsApp opt-in backfill: set {updated} existing client profile(s) to opted-in.")
+    except Exception as e:
+        logger.warning(f"WhatsApp opt-in backfill skipped: {e}")

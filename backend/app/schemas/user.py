@@ -103,6 +103,8 @@ class ClientRegistrationRequest(BaseModel):
     any_other: bool = Field(False)
     any_other_text: Optional[str] = Field(None, max_length=255, description="Description of 'Any Other' income source")
 
+    city: Optional[str] = Field(None, max_length=100, description="City the client belongs to")
+
     # Referral source
     referral_source: str = Field(..., description="How did you hear about us? One of: WEBSITE, FRIEND_RELATIVE, PROFESSIONAL_REFERRAL, DIRECTED_BY_FIRM, OTHER")
     referral_source_other: Optional[str] = Field(None, max_length=255, description="Required if referral_source is OTHER")
@@ -167,6 +169,7 @@ class ClientProfileUpdate(BaseModel):
     date_of_birth: Optional[date] = None
     contact_number: Optional[str] = Field(None, max_length=15)
     address: Optional[str] = None
+    city: Optional[str] = Field(None, max_length=100)
     income_type: Optional[str] = Field(None, max_length=50)
     bank_account_details: Optional[str] = None
     form_data: Optional[dict[str, Any]] = None
@@ -219,6 +222,7 @@ class ClientProfileResponse(BaseModel):
     date_of_birth: Optional[date] = None
     contact_number: Optional[str] = None
     address: Optional[str] = None
+    city: Optional[str] = None
     income_type: Optional[str] = None
     bank_account_details: Optional[str] = None
     form_data: dict[str, Any] = {}

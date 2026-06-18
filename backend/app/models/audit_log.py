@@ -1,7 +1,7 @@
-"""Model: audit_logs — Append-only audit trail for all system events."""
+﻿"""Model: audit_logs — Append-only audit trail for all system events."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Enum, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
@@ -23,7 +23,7 @@ class AuditLog(Base):
     details = Column(JSONB, nullable=False, default=dict)
     ip_address = Column(INET, nullable=True)
     user_agent = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     actor = relationship("User", foreign_keys=[actor_id])

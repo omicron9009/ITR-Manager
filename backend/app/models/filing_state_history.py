@@ -1,7 +1,7 @@
-"""Model: filing_state_history — State transition log for filing state machine."""
+﻿"""Model: filing_state_history — State transition log for filing state machine."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Enum, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import UUID
@@ -19,7 +19,7 @@ class FilingStateHistory(Base):
     from_status = Column(Enum(FilingStatus, name="filing_status"), nullable=True)
     to_status = Column(Enum(FilingStatus, name="filing_status"), nullable=False)
     changed_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    changed_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    changed_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     remarks = Column(Text, nullable=True)
 
     # Relationships
