@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_partner, get_current_user, hash_password
+from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_partner, get_current_partner_or_elevated_manager, get_current_user, hash_password
 from app.database import get_db
 from app.enums import AccountStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -76,10 +76,10 @@ async def register_new_client(
 async def activate_client_account(
     body: ClientActivationRequest,
     request: Request,
-    current_user: User = Depends(get_current_manager_executive_or_partner),
+    current_user: User = Depends(get_current_partner),
     db: AsyncSession = Depends(get_db),
 ):
-    """Activate a client account (Partner, Manager, or Executive)."""
+    """Activate a client account (Partner only)."""
     client = await activate_client(
         db=db,
         client_id=body.client_id,
@@ -115,7 +115,7 @@ async def reject_client_account(
 async def set_client_fee(
     client_id: UUID,
     fee: float = Query(..., gt=0, description="Professional fee in rupees"),
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
     """Set or update the professional fee for a client. Partner only."""
@@ -159,7 +159,7 @@ async def set_client_fee(
 async def toggle_no_fees(
     client_id: UUID,
     no_fees: bool = Query(..., description="Set to true to mark client as no-fees-applicable"),
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
     """Toggle no_fees_applicable for a client. Partner only."""
@@ -322,15 +322,16 @@ async def list_clients(
     # Base query
     query = select(User).where(User.role == UserRole.CLIENT)
 
-    # Manager scope: clients directly assigned to this manager
+    # Manager scope: elevated manager sees all clients; regular manager sees only assigned
     if current_user.role == UserRole.MANAGER:
-        from app.models.manager_client_assignment import ManagerClientAssignment
-        query = query.join(
-            ManagerClientAssignment,
-            (ManagerClientAssignment.client_id == User.id)
-            & (ManagerClientAssignment.manager_id == current_user.id)
-            & (ManagerClientAssignment.is_active == True),
-        )
+        if not getattr(current_user, "is_elevated", False):
+            from app.models.manager_client_assignment import ManagerClientAssignment
+            query = query.join(
+                ManagerClientAssignment,
+                (ManagerClientAssignment.client_id == User.id)
+                & (ManagerClientAssignment.manager_id == current_user.id)
+                & (ManagerClientAssignment.is_active == True),
+            )
 
     # Executive scope: only assigned clients
     elif current_user.role == UserRole.EXECUTIVE:

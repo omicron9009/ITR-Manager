@@ -488,6 +488,8 @@ async def _sync_new_columns():
         ("notifications", "whatsapp_error", "TEXT", None),
         # WhatsApp opt-in flag on client profiles
         ("client_profiles", "whatsapp_opt_in", "BOOLEAN NOT NULL", "'true'"),
+        # Elevated manager flag
+        ("users", "is_elevated", "BOOLEAN NOT NULL", "'false'"),
     ]
 
     try:

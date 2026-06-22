@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_manager_executive_access
-from app.core.security import get_current_manager_or_partner, get_current_partner, get_current_user, hash_password
+from app.core.security import get_current_manager_or_partner, get_current_partner, get_current_partner_or_elevated_manager, get_current_user, hash_password
 from app.database import get_db
 from app.enums import FilingStatus, UserRole
 from app.models.executive_assignment import ExecutiveClientAssignment
@@ -38,6 +38,7 @@ from app.services.manager_service import (
     create_manager,
     get_manager_team_client_ids,
     get_manager_team_executive_ids,
+    toggle_manager_elevation,
     unassign_client_from_manager,
     unassign_executive_from_manager,
 )
@@ -66,6 +67,7 @@ async def create_new_manager(
         full_name=manager.full_name,
         account_status=manager.account_status.value,
         is_active=manager.is_active,
+        is_elevated=manager.is_elevated,
         team_executive_count=0,
         team_client_count=0,
         created_at=manager.created_at,
@@ -75,10 +77,10 @@ async def create_new_manager(
 # ─── GET /managers ──────────────────────────────────────────
 @router.get("", response_model=ManagerListResponse)
 async def list_managers(
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all managers with team info (Partner only)."""
+    """List all managers with team info (Partner or Elevated Manager)."""
     result = await db.execute(
         select(User).where(User.role == UserRole.MANAGER).order_by(User.full_name)
     )
@@ -111,6 +113,7 @@ async def list_managers(
                 full_name=mgr.full_name,
                 account_status=mgr.account_status.value,
                 is_active=mgr.is_active,
+                is_elevated=mgr.is_elevated,
                 team_executive_count=exec_count,
                 team_client_count=client_count,
                 created_at=mgr.created_at,
@@ -275,21 +278,25 @@ async def manager_assign_client_to_executive(
         if current_user.id != manager_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Can only assign within your team")
 
-        # Ensure the executive belongs to this manager's team
-        has_access = await check_manager_executive_access(db, manager_id, body.executive_id)
-        if not has_access:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This executive is not on your team",
-            )
+        is_elevated = getattr(current_user, "is_elevated", False)
 
-        # Ensure the client belongs to this manager
-        client_ids = await get_manager_team_client_ids(db, manager_id)
-        if body.client_id not in client_ids:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This client is not assigned to you",
-            )
+        # Ensure the executive belongs to this manager's team (elevated can use any executive)
+        if not is_elevated:
+            has_access = await check_manager_executive_access(db, manager_id, body.executive_id)
+            if not has_access:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This executive is not on your team",
+                )
+
+        # Ensure the client belongs to this manager (elevated can assign any client)
+        if not is_elevated:
+            client_ids = await get_manager_team_client_ids(db, manager_id)
+            if body.client_id not in client_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This client is not assigned to you",
+                )
 
     assignment = await assign_executive_to_client(
         db=db,
@@ -378,7 +385,7 @@ async def get_my_clients(
     if current_user.role != UserRole.MANAGER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
 
-    return await _get_manager_clients(db, current_user.id, page, page_size, search)
+    return await _get_manager_clients(db, current_user.id, page, page_size, search, is_elevated=getattr(current_user, "is_elevated", False))
 
 
 # ─── GET /managers/{manager_id}/clients ─────────────────────
@@ -397,10 +404,11 @@ async def get_manager_clients(
 
     # Validate manager exists
     mgr_result = await db.execute(select(User).where(User.id == manager_id, User.role == UserRole.MANAGER))
-    if not mgr_result.scalar_one_or_none():
+    target_mgr = mgr_result.scalar_one_or_none()
+    if not target_mgr:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manager not found")
 
-    return await _get_manager_clients(db, manager_id, page, page_size, search)
+    return await _get_manager_clients(db, manager_id, page, page_size, search, is_elevated=getattr(target_mgr, "is_elevated", False))
 
 
 async def _get_manager_clients(
@@ -409,19 +417,24 @@ async def _get_manager_clients(
     page: int,
     page_size: int,
     search: Optional[str],
+    is_elevated: bool = False,
 ) -> ManagerClientListResponse:
     """Internal helper: fetch paginated client list for a manager."""
-    # Base: clients assigned to this manager
-    query = (
-        select(User)
-        .join(
-            ManagerClientAssignment,
-            (ManagerClientAssignment.client_id == User.id)
-            & (ManagerClientAssignment.manager_id == manager_id)
-            & (ManagerClientAssignment.is_active == True),
+    if is_elevated:
+        # Elevated manager sees ALL clients firm-wide
+        query = select(User).where(User.role == UserRole.CLIENT)
+    else:
+        # Regular manager: only assigned clients
+        query = (
+            select(User)
+            .join(
+                ManagerClientAssignment,
+                (ManagerClientAssignment.client_id == User.id)
+                & (ManagerClientAssignment.manager_id == manager_id)
+                & (ManagerClientAssignment.is_active == True),
+            )
+            .where(User.role == UserRole.CLIENT)
         )
-        .where(User.role == UserRole.CLIENT)
-    )
 
     if search:
         search_filter = f"%{search}%"
@@ -538,3 +551,42 @@ async def get_mgr_tags(
     from app.services.tag_service import get_manager_tags
 
     return await get_manager_tags(db, manager_id)
+
+
+# ─── PUT /managers/{manager_id}/elevation ───────────────────
+@router.put("/{manager_id}/elevation", response_model=ManagerResponse)
+async def toggle_manager_elevation_endpoint(
+    manager_id: UUID,
+    elevate: bool = Query(..., description="True to elevate, False to de-elevate"),
+    current_user: User = Depends(get_current_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle the elevated status on a Manager (Partner only)."""
+    manager = await toggle_manager_elevation(
+        db=db, manager_id=manager_id, elevate=elevate, toggled_by=current_user.id
+    )
+
+    exec_count_result = await db.execute(
+        select(func.count()).select_from(ManagerExecutiveAssignment).where(
+            ManagerExecutiveAssignment.manager_id == manager_id,
+            ManagerExecutiveAssignment.is_active == True,
+        )
+    )
+    client_count_result = await db.execute(
+        select(func.count()).select_from(ManagerClientAssignment).where(
+            ManagerClientAssignment.manager_id == manager_id,
+            ManagerClientAssignment.is_active == True,
+        )
+    )
+
+    return ManagerResponse(
+        id=manager.id,
+        email=manager.email,
+        full_name=manager.full_name,
+        account_status=manager.account_status.value,
+        is_active=manager.is_active,
+        is_elevated=manager.is_elevated,
+        team_executive_count=exec_count_result.scalar() or 0,
+        team_client_count=client_count_result.scalar() or 0,
+        created_at=manager.created_at,
+    )

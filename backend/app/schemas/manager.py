@@ -19,6 +19,7 @@ class ManagerResponse(BaseModel):
     full_name: str
     account_status: str
     is_active: bool
+    is_elevated: bool = False
     team_executive_count: int = 0
     team_client_count: int = 0
     created_at: datetime

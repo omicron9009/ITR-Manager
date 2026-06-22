@@ -78,6 +78,8 @@ async def enforce_client_access(
         return  # Partner can access all clients
 
     if current_user.role == UserRole.MANAGER:
+        if getattr(current_user, "is_elevated", False):
+            return  # Elevated manager has firm-wide access
         has_access = await check_manager_client_access(db, current_user.id, client_id)
         if not has_access:
             raise HTTPException(

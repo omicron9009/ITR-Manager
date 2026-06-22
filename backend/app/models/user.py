@@ -28,6 +28,7 @@ class User(Base):
     pan_document_id = Column(UUID(as_uuid=True), ForeignKey("stored_files.id", ondelete="SET NULL"), nullable=True)
     rejection_reason = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
+    is_elevated = Column(Boolean, nullable=False, default=False)
     recovery_codes_issued = Column(Boolean, nullable=False, default=False)
     activated_at = Column(DateTime(timezone=True), nullable=True)
     activated_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

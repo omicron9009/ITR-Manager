@@ -175,6 +175,20 @@ async def get_current_manager_executive_or_partner(
     return current_user
 
 
+async def get_current_partner_or_elevated_manager(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Allow Partner, or a Manager with is_elevated=True."""
+    if current_user.role == UserRole.PARTNER:
+        return current_user
+    if current_user.role == UserRole.MANAGER and getattr(current_user, "is_elevated", False):
+        return current_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Partner or Elevated Manager access required",
+    )
+
+
 async def get_current_dashboard_user_or_partner(
     current_user: User = Depends(get_current_user),
 ) -> User:
