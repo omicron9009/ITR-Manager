@@ -153,12 +153,15 @@ async def _build_dashboard_summary(
     # ── Base filter (role-scoped) ──
     base_filter = []
     if current_user.role == UserRole.MANAGER:
-        from app.services.manager_service import get_manager_team_client_ids
-        team_client_ids = await get_manager_team_client_ids(db, current_user.id)
-        if team_client_ids:
-            base_filter.append(ITRFiling.client_id.in_(team_client_ids))
+        if getattr(current_user, "is_elevated", False):
+            pass  # Elevated manager sees all filings firm-wide — no filter
         else:
-            base_filter.append(ITRFiling.client_id == None)  # No results
+            from app.services.manager_service import get_manager_team_client_ids
+            team_client_ids = await get_manager_team_client_ids(db, current_user.id)
+            if team_client_ids:
+                base_filter.append(ITRFiling.client_id.in_(team_client_ids))
+            else:
+                base_filter.append(ITRFiling.client_id == None)  # No results
     elif current_user.role == UserRole.EXECUTIVE:
         base_filter.append(ITRFiling.assigned_executive_id == current_user.id)
 
@@ -186,13 +189,18 @@ async def _build_dashboard_summary(
             select(func.count()).select_from(User).where(User.role == UserRole.CLIENT)
         )
     elif current_user.role == UserRole.MANAGER:
-        from app.models.manager_client_assignment import ManagerClientAssignment
-        client_count_result = await db.execute(
-            select(func.count()).select_from(ManagerClientAssignment).where(
-                ManagerClientAssignment.manager_id == current_user.id,
-                ManagerClientAssignment.is_active == True,
+        if getattr(current_user, "is_elevated", False):
+            client_count_result = await db.execute(
+                select(func.count()).select_from(User).where(User.role == UserRole.CLIENT)
             )
-        )
+        else:
+            from app.models.manager_client_assignment import ManagerClientAssignment
+            client_count_result = await db.execute(
+                select(func.count()).select_from(ManagerClientAssignment).where(
+                    ManagerClientAssignment.manager_id == current_user.id,
+                    ManagerClientAssignment.is_active == True,
+                )
+            )
     else:
         client_count_result = await db.execute(
             select(func.count()).select_from(ExecutiveClientAssignment).where(

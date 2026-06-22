@@ -513,3 +513,41 @@ async def _transfer_executive_clients_to_manager(
                 "client_ids": [str(c) for c in client_ids[:20]],  # cap for large lists
             },
         )
+
+
+async def toggle_manager_elevation(
+    db: AsyncSession,
+    manager_id: UUID,
+    elevate: bool,
+    toggled_by: UUID,
+) -> User:
+    """Set or clear is_elevated on a Manager. Partner-only action."""
+    result = await db.execute(
+        select(User).where(User.id == manager_id, User.role == UserRole.MANAGER)
+    )
+    manager = result.scalar_one_or_none()
+    if not manager:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manager not found")
+
+    if manager.is_elevated == elevate:
+        label = "elevated" if elevate else "de-elevated"
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Manager is already {label}")
+
+    manager.is_elevated = elevate
+    await db.flush()
+
+    event_type = AuditEventType.MANAGER_ELEVATED if elevate else AuditEventType.MANAGER_DE_ELEVATED
+    await record_audit_event(
+        db=db,
+        event_type=event_type,
+        actor_id=toggled_by,
+        details={
+            "manager_id": str(manager_id),
+            "manager_name": manager.full_name,
+            "elevated": elevate,
+        },
+    )
+
+    await bump_version(NS.CLIENT_LIST)
+    await bump_version(NS.MANAGER_CLIENTS)
+    return manager

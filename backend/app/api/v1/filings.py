@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AccountNotActiveError, DuplicateFilingError, OnboardingFormNotSubmittedError
 from app.core.permissions import enforce_client_access, enforce_filing_access
-from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_user,get_current_manager_or_partner
+from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_manager_or_partner, get_current_partner_or_elevated_manager, get_current_user
 from app.database import get_db
 from app.enums import AccountStatus, AuditEventType, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -471,10 +471,10 @@ async def update_filing_fee(
     filing_id: UUID,
     fee: float = Query(..., gt=0, description="Professional fee in rupees"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
-    current_user: User = Depends(get_current_manager_executive_or_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """Set/update the professional fee for a filing. Partner only.
+    """Set/update the professional fee for a filing. Partner or Elevated Manager only.
 
     Directly applies the fee, regenerates the engagement letter with the
     actual fee amount, and emails the revised letter to the client.
@@ -483,9 +483,6 @@ async def update_filing_fee(
     from decimal import Decimal
     from datetime import datetime, timezone
     from app.services.engagement_letter_service import generate_engagement_letter_pdf, upload_engagement_letter, get_selected_income_heads
-
-    if current_user.role != UserRole.PARTNER:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Partner can update professional fee")
 
     result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = result.scalar_one_or_none()
@@ -622,6 +619,19 @@ async def list_filings(
         query = query.where(ITRFiling.client_id == current_user.id)
     elif current_user.role == UserRole.EXECUTIVE:
         query = query.where(ITRFiling.assigned_executive_id == current_user.id)
+    elif current_user.role == UserRole.MANAGER:
+        if not getattr(current_user, "is_elevated", False):
+            # Regular manager: only filings for their assigned clients
+            from app.models.manager_client_assignment import ManagerClientAssignment
+            query = query.where(
+                ITRFiling.client_id.in_(
+                    select(ManagerClientAssignment.client_id).where(
+                        ManagerClientAssignment.manager_id == current_user.id,
+                        ManagerClientAssignment.is_active == True,
+                    )
+                )
+            )
+        # Elevated manager sees all (same as Partner)
     # Partner sees all
 
     # Filters
@@ -897,6 +907,32 @@ async def transition_filing(
         remarks=body.remarks,
         ip_address=request.client.host if request.client else None,
     )
+
+    # Notify elevated managers to upload invoice when filing enters FILING state
+    if body.to_status == FilingStatus.FILING and not filing.no_fees_applicable:
+        client_result_notify = await db.execute(select(User).where(User.id == filing.client_id))
+        client_notify = client_result_notify.scalar_one_or_none()
+        client_label = f"{client_notify.full_name} ({filing.financial_year})" if client_notify else filing.financial_year
+
+        elevated_mgr_result = await db.execute(
+            select(User).where(
+                User.role == UserRole.MANAGER,
+                User.is_elevated == True,
+                User.is_active == True,
+            )
+        )
+        for mgr in elevated_mgr_result.scalars().all():
+            await create_notification(
+                db=db,
+                user_id=mgr.id,
+                title="Invoice Upload Required",
+                message=f"Filing for {client_label} has moved to FILING stage. Please upload the invoice.",
+                related_filing_id=filing.id,
+                related_client_id=filing.client_id,
+                financial_year=filing.financial_year,
+                action_url_path=f"/filings/{filing.id}/completed-docs",
+                cta_label="Upload Invoice",
+            )
 
     return FilingResponse(
         id=filing.id,

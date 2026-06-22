@@ -207,8 +207,11 @@ async def get_completed_doc_upload_url(
     filename = sanitize_filename(filename)
 
     if doc_type == CompletedDocType.INVOICE:
-        if current_user.role != UserRole.PARTNER:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice upload is restricted to Partner")
+        is_authorized = current_user.role == UserRole.PARTNER or (
+            current_user.role == UserRole.MANAGER and getattr(current_user, "is_elevated", False)
+        )
+        if not is_authorized:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice upload is restricted to Partner or Elevated Manager")
     elif current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
@@ -263,8 +266,11 @@ async def confirm_completed_doc_upload(
     filename = sanitize_filename(filename)
 
     if doc_type == CompletedDocType.INVOICE:
-        if current_user.role != UserRole.PARTNER:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice upload is restricted to Partner")
+        is_authorized = current_user.role == UserRole.PARTNER or (
+            current_user.role == UserRole.MANAGER and getattr(current_user, "is_elevated", False)
+        )
+        if not is_authorized:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice upload is restricted to Partner or Elevated Manager")
     elif current_user.role not in (UserRole.PARTNER, UserRole.EXECUTIVE, UserRole.MANAGER):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
@@ -396,14 +402,22 @@ async def confirm_completed_doc_upload(
     )
     existing_doc = existing_result.scalar_one_or_none()
 
+    # Elevated manager uploading an invoice counts as manager-level approval
+    is_elevated_mgr = (
+        current_user.role == UserRole.MANAGER
+        and getattr(current_user, "is_elevated", False)
+    )
+    invoice_auto_approved = doc_type == CompletedDocType.INVOICE and is_elevated_mgr
+    initial_status = CompletedDocStatus.MANAGER_APPROVED if invoice_auto_approved else CompletedDocStatus.UPLOADED
+
     if existing_doc:
         existing_doc.file_id = stored_file.id
         existing_doc.uploaded_by = current_user.id
         existing_doc.uploaded_at = datetime.now(timezone.utc)
-        existing_doc.status = CompletedDocStatus.UPLOADED
-        # Reset approval fields on re-upload
-        existing_doc.manager_approved_by = None
-        existing_doc.manager_approved_at = None
+        existing_doc.status = initial_status
+        # Reset approval fields on re-upload; pre-fill manager approval if elevated manager
+        existing_doc.manager_approved_by = current_user.id if invoice_auto_approved else None
+        existing_doc.manager_approved_at = datetime.now(timezone.utc) if invoice_auto_approved else None
         existing_doc.manager_rejected_by = None
         existing_doc.manager_rejected_at = None
         existing_doc.rejection_reason = None
@@ -415,7 +429,9 @@ async def confirm_completed_doc_upload(
             doc_type=doc_type,
             file_id=stored_file.id,
             uploaded_by=current_user.id,
-            status=CompletedDocStatus.UPLOADED,
+            status=initial_status,
+            manager_approved_by=current_user.id if invoice_auto_approved else None,
+            manager_approved_at=datetime.now(timezone.utc) if invoice_auto_approved else None,
         )
         db.add(completed_doc)
 
@@ -438,7 +454,42 @@ async def confirm_completed_doc_upload(
             actor_id=current_user.id,
             client_id=filing.client_id,
             filing_id=filing_id,
+            details={"auto_manager_approved": invoice_auto_approved} if invoice_auto_approved else None,
         )
+
+        client_label = f"{client_user.full_name} ({filing.financial_year})" if client_user else filing.financial_year
+
+        if invoice_auto_approved:
+            # Elevated manager uploaded — notify Partner for final approval
+            partner_result = await db.execute(
+                select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
+            )
+            partner = partner_result.scalar_one_or_none()
+            if partner:
+                await create_notification(
+                    db=db,
+                    user_id=partner.id,
+                    title="Invoice Ready for Approval",
+                    message=f"Invoice for {client_label} has been uploaded by {current_user.full_name} and is awaiting your approval.",
+                    related_filing_id=filing_id,
+                )
+        else:
+            # Partner uploaded — notify all elevated managers
+            elevated_result = await db.execute(
+                select(User).where(
+                    User.role == UserRole.MANAGER,
+                    User.is_elevated == True,
+                    User.is_active == True,
+                )
+            )
+            for mgr in elevated_result.scalars().all():
+                await create_notification(
+                    db=db,
+                    user_id=mgr.id,
+                    title="Invoice Uploaded",
+                    message=f"An invoice has been uploaded for {client_label}.",
+                    related_filing_id=filing_id,
+                )
     elif doc_type == CompletedDocType.ITR_JSON:
         await record_audit_event(
             db=db,
@@ -479,7 +530,9 @@ async def confirm_completed_doc_upload(
                 )
             )
             mgr_assignment = mgr_result.scalar_one_or_none()
+            assigned_manager_id = None
             if mgr_assignment:
+                assigned_manager_id = mgr_assignment.manager_id
                 await create_notification(
                     db=db,
                     user_id=mgr_assignment.manager_id,
@@ -487,6 +540,24 @@ async def confirm_completed_doc_upload(
                     message=f"All required filed documents have been uploaded for {client_user.full_name if client_user else 'client'} ({filing.financial_year}). Please review and approve.",
                     related_filing_id=filing_id,
                 )
+
+            # Also notify elevated managers (unless they are already the assigned manager)
+            elevated_result = await db.execute(
+                select(User).where(
+                    User.role == UserRole.MANAGER,
+                    User.is_elevated == True,
+                    User.is_active == True,
+                )
+            )
+            for mgr in elevated_result.scalars().all():
+                if mgr.id != assigned_manager_id:
+                    await create_notification(
+                        db=db,
+                        user_id=mgr.id,
+                        title="Filed Documents Ready for Review",
+                        message=f"All required filed documents have been uploaded for {client_user.full_name if client_user else 'client'} ({filing.financial_year}). Please review and approve.",
+                        related_filing_id=filing_id,
+                    )
 
         await db.flush()
         remaining = [t.value for t in (required_doc_types - existing_types)]

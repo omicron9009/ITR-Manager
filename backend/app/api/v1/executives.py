@@ -93,8 +93,8 @@ async def list_executives(
     """List executives with workload info (Manager sees their team, Partner sees all)."""
     from app.models.manager_executive_assignment import ManagerExecutiveAssignment
 
-    # Manager sees only their team's executives
-    if current_user.role == UserRole.MANAGER:
+    # Elevated manager sees all executives firm-wide; regular manager sees only their team
+    if current_user.role == UserRole.MANAGER and not getattr(current_user, "is_elevated", False):
         team_result = await db.execute(
             select(ManagerExecutiveAssignment.executive_id).where(
                 ManagerExecutiveAssignment.manager_id == current_user.id,

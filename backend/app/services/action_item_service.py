@@ -59,7 +59,8 @@ async def get_action_items(
     if user.role == UserRole.PARTNER:
         items = await _get_partner_items(db, filing_id_filter)
     elif user.role == UserRole.MANAGER:
-        items = await _get_manager_items(db, user.id, filing_id_filter)
+        firm_wide = getattr(user, "is_elevated", False)
+        items = await _get_manager_items(db, user.id, filing_id_filter, firm_wide=firm_wide)
     elif user.role == UserRole.EXECUTIVE:
         items = await _get_executive_items(db, user.id, filing_id_filter)
     elif user.role == UserRole.CLIENT:
@@ -201,6 +202,7 @@ async def _get_partner_items(
         )
 
     # PARTNER_APPROVE_COMPLETED_DOCS — completed docs awaiting partner approval
+    # Also: UPLOAD_INVOICE — filing in FILING state, invoice not yet uploaded
     stmt = (
         select(ITRFiling)
         .options(
@@ -236,6 +238,23 @@ async def _get_partner_items(
                 )
             )
 
+        # UPLOAD_INVOICE — invoice not yet uploaded for this filing
+        if not filing.no_fees_applicable:
+            has_invoice = any(cd.doc_type == CompletedDocType.INVOICE for cd in filing.completed_docs)
+            if not has_invoice:
+                items.append(
+                    ActionItemResponse(
+                        type=ActionItemType.UPLOAD_INVOICE,
+                        title="Upload invoice",
+                        description=f"Upload invoice for {client_name} FY {filing.financial_year}",
+                        priority=ActionItemPriority.HIGH,
+                        related_filing_id=filing.id,
+                        related_client_id=filing.client_id,
+                        financial_year=filing.financial_year,
+                        action_url=f"/filings/{filing.id}/completed-docs",
+                    )
+                )
+
     return items
 
 
@@ -270,30 +289,38 @@ async def _get_executive_items(
 
 
 async def _get_manager_items(
-    db: AsyncSession, manager_id: UUID, filing_id_filter: Optional[UUID] = None
+    db: AsyncSession,
+    manager_id: UUID,
+    filing_id_filter: Optional[UUID] = None,
+    firm_wide: bool = False,
 ) -> list[ActionItemResponse]:
     items: list[ActionItemResponse] = []
 
-    # Get team executive IDs
-    result = await db.execute(
-        select(ManagerExecutiveAssignment.executive_id).where(
-            ManagerExecutiveAssignment.manager_id == manager_id,
-            ManagerExecutiveAssignment.is_active == True,
-        )
-    )
-    team_exec_ids = [row[0] for row in result.all()]
-
-    # Get team client IDs
-    if team_exec_ids:
+    if firm_wide:
+        # Elevated manager: firm-wide scope — no client filter applied
+        team_client_ids = None  # None signals "all clients" in queries below
+        team_exec_ids = []
+    else:
+        # Get team executive IDs
         result = await db.execute(
-            select(ExecutiveClientAssignment.client_id).where(
-                ExecutiveClientAssignment.executive_id.in_(team_exec_ids),
-                ExecutiveClientAssignment.is_active == True,
+            select(ManagerExecutiveAssignment.executive_id).where(
+                ManagerExecutiveAssignment.manager_id == manager_id,
+                ManagerExecutiveAssignment.is_active == True,
             )
         )
-        team_client_ids = [row[0] for row in result.all()]
-    else:
-        team_client_ids = []
+        team_exec_ids = [row[0] for row in result.all()]
+
+        # Get team client IDs
+        if team_exec_ids:
+            result = await db.execute(
+                select(ExecutiveClientAssignment.client_id).where(
+                    ExecutiveClientAssignment.executive_id.in_(team_exec_ids),
+                    ExecutiveClientAssignment.is_active == True,
+                )
+            )
+            team_client_ids = [row[0] for row in result.all()]
+        else:
+            team_client_ids = []
 
     if not filing_id_filter:
         # ASSIGN_CLIENT_TO_EXECUTIVE — active clients with no executive in this team
@@ -324,7 +351,7 @@ async def _get_manager_items(
             )
 
     # Manager-specific: MANAGER_APPROVE_COMPUTATION — computations awaiting manager approval
-    if team_client_ids or filing_id_filter:
+    if firm_wide or team_client_ids or filing_id_filter:
         stmt = (
             select(ITRFiling)
             .options(
@@ -335,7 +362,7 @@ async def _get_manager_items(
         )
         if filing_id_filter:
             stmt = stmt.where(ITRFiling.id == filing_id_filter)
-        elif team_client_ids:
+        elif team_client_ids is not None:
             stmt = stmt.where(ITRFiling.client_id.in_(team_client_ids))
 
         result = await db.execute(stmt)
@@ -361,7 +388,7 @@ async def _get_manager_items(
                 )
 
     # Manager-specific: MANAGER_APPROVE_COMPLETED_DOCS — completed docs awaiting manager approval
-    if team_client_ids or filing_id_filter:
+    if firm_wide or team_client_ids or filing_id_filter:
         stmt = (
             select(ITRFiling)
             .options(
@@ -372,7 +399,7 @@ async def _get_manager_items(
         )
         if filing_id_filter:
             stmt = stmt.where(ITRFiling.id == filing_id_filter)
-        elif team_client_ids:
+        elif team_client_ids is not None:
             stmt = stmt.where(ITRFiling.client_id.in_(team_client_ids))
 
         result = await db.execute(stmt)
@@ -396,7 +423,74 @@ async def _get_manager_items(
                     )
                 )
 
-    # Also include standard staff filing items for their team
+    # Elevated manager: SET_PROFESSIONAL_FEE + UPLOAD_INVOICE (same as Partner)
+    if firm_wide:
+        # SET_PROFESSIONAL_FEE — computation approved but fee not yet set
+        fee_stmt = (
+            select(ITRFiling)
+            .options(selectinload(ITRFiling.client))
+            .where(
+                ITRFiling.computation_approved_at.isnot(None),
+                ITRFiling.professional_fee.is_(None),
+                ITRFiling.no_fees_applicable == False,
+                ITRFiling.status.in_(_ACTIVE_STATES),
+            )
+        )
+        if filing_id_filter:
+            fee_stmt = fee_stmt.where(ITRFiling.id == filing_id_filter)
+
+        result = await db.execute(fee_stmt)
+        filings_needing_fee = result.scalars().unique().all()
+        for filing in filings_needing_fee:
+            client_name = filing.client.full_name if filing.client else "Client"
+            items.append(
+                ActionItemResponse(
+                    type=ActionItemType.SET_PROFESSIONAL_FEE,
+                    title="Set professional fee",
+                    description=f"Computation approved for {client_name} FY {filing.financial_year} — professional fee needs to be set",
+                    priority=ActionItemPriority.HIGH,
+                    related_filing_id=filing.id,
+                    related_client_id=filing.client_id,
+                    financial_year=filing.financial_year,
+                    action_url=f"/filings/{filing.id}",
+                )
+            )
+
+        # UPLOAD_INVOICE — filing in FILING state, invoice not yet uploaded
+        inv_stmt = (
+            select(ITRFiling)
+            .options(
+                selectinload(ITRFiling.client),
+                selectinload(ITRFiling.completed_docs),
+            )
+            .where(
+                ITRFiling.status == FilingStatus.FILING,
+                ITRFiling.no_fees_applicable == False,
+            )
+        )
+        if filing_id_filter:
+            inv_stmt = inv_stmt.where(ITRFiling.id == filing_id_filter)
+
+        result = await db.execute(inv_stmt)
+        filings_for_invoice = result.scalars().unique().all()
+        for filing in filings_for_invoice:
+            has_invoice = any(cd.doc_type == CompletedDocType.INVOICE for cd in filing.completed_docs)
+            if not has_invoice:
+                client_name = filing.client.full_name if filing.client else "Client"
+                items.append(
+                    ActionItemResponse(
+                        type=ActionItemType.UPLOAD_INVOICE,
+                        title="Upload invoice",
+                        description=f"Upload invoice for {client_name} FY {filing.financial_year}",
+                        priority=ActionItemPriority.HIGH,
+                        related_filing_id=filing.id,
+                        related_client_id=filing.client_id,
+                        financial_year=filing.financial_year,
+                        action_url=f"/filings/{filing.id}/completed-docs",
+                    )
+                )
+
+    # Also include standard staff filing items (firm-wide when elevated, team-scoped otherwise)
     staff_items = await _get_filing_items_for_staff(
         db, filing_id_filter, scoped_client_ids=team_client_ids if team_client_ids else None
     )
