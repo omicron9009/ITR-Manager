@@ -57,7 +57,11 @@ async def login(
             detail="Invalid email or password",
         )
 
-    token = create_access_token(subject_id=user.id, role=user.role.value)
+    token = create_access_token(
+        subject_id=user.id,
+        role=user.role.value,
+        is_elevated=getattr(user, "is_elevated", False),
+    )
 
     # Issue recovery codes on first login (one-time)
     recovery_codes = None
@@ -69,6 +73,7 @@ async def login(
         access_token=token,
         recovery_codes=recovery_codes,
         email=user.email if recovery_codes else None,
+        is_elevated=getattr(user, "is_elevated", False),
     )
 
 

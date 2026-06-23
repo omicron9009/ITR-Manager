@@ -29,12 +29,15 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
 
-def create_access_token(subject_id: UUID, role: str) -> str:
+def create_access_token(subject_id: UUID, role: str, is_elevated: bool = False) -> str:
     """Create a signed JWT access token.
 
     DASHBOARD_USER tokens use a long TTL (``JWT_DASHBOARD_TOKEN_EXPIRE_MINUTES``,
     default 30 days) so TV/kiosk dashboards don't get logged out. All other
     roles use the standard ``JWT_ACCESS_TOKEN_EXPIRE_MINUTES`` (default 60 min).
+
+    ``is_elevated`` is included in the payload for MANAGER tokens so the
+    frontend can distinguish elevated managers without an extra API call.
     """
     if role == UserRole.DASHBOARD_USER.value:
         ttl_minutes = settings.JWT_DASHBOARD_TOKEN_EXPIRE_MINUTES
@@ -45,6 +48,7 @@ def create_access_token(subject_id: UUID, role: str) -> str:
         "sub": str(subject_id),
         "role": role,
         "exp": expire,
+        "is_elevated": is_elevated,
     }
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 

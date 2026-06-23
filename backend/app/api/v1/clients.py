@@ -76,10 +76,10 @@ async def register_new_client(
 async def activate_client_account(
     body: ClientActivationRequest,
     request: Request,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """Activate a client account (Partner only)."""
+    """Activate a client account (Partner or Elevated Manager)."""
     client = await activate_client(
         db=db,
         client_id=body.client_id,
@@ -196,10 +196,10 @@ async def toggle_no_fees(
 async def set_client_partner_tag(
     client_id: UUID,
     tag_id: UUID = Query(..., description="Partner tag ID to assign"),
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign or change the partner tag for a client. Partner only."""
+    """Assign or change the partner tag for a client. Partner or Elevated Manager."""
     from fastapi import HTTPException, status
     from app.models.tag import Tag
     from app.enums import TagType
@@ -242,10 +242,10 @@ async def set_client_partner_tag(
 @router.delete("/{client_id}/partner-tag", response_model=dict)
 async def remove_client_partner_tag(
     client_id: UUID,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove the partner tag from a client. Partner only."""
+    """Remove the partner tag from a client. Partner or Elevated Manager."""
     from fastapi import HTTPException, status
 
     result = await db.execute(select(User).where(User.id == client_id, User.role == UserRole.CLIENT))
