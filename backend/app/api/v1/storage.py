@@ -912,8 +912,9 @@ async def get_file_download_url(
         )
         completed_doc = doc_result.scalar_one_or_none()
         if completed_doc:
-            if completed_doc.doc_type == CompletedDocType.INVOICE and current_user.role not in (UserRole.PARTNER, UserRole.CLIENT):
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice download is restricted to Partner")
+            is_elevated_mgr = current_user.role == UserRole.MANAGER and getattr(current_user, "is_elevated", False)
+            if completed_doc.doc_type == CompletedDocType.INVOICE and current_user.role not in (UserRole.PARTNER, UserRole.CLIENT) and not is_elevated_mgr:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invoice download is restricted to Partner or Elevated Manager")
             file_result = await db.execute(select(StoredFile).where(StoredFile.id == completed_doc.file_id))
             stored_file = file_result.scalar_one_or_none()
 

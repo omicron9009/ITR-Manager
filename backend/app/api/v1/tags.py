@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_executive, get_current_manager_or_partner, get_current_partner, get_current_user
+from app.core.security import get_current_executive, get_current_manager_or_partner, get_current_partner, get_current_partner_or_elevated_manager, get_current_user
 from app.database import get_db
 from app.enums import TagType, UserRole
 from app.models.user import User
@@ -87,10 +87,10 @@ async def create_new_tag(
 @router.get("", response_model=TagListResponse)
 async def list_all_tags(
     tag_type: Optional[TagType] = Query(None, alias="type"),
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all tags, optionally filtered by type. Partner only."""
+    """List all tags, optionally filtered by type. Partner or Elevated Manager."""
     from app.config import settings as _settings
     from app.core.cache import NS, get_or_compute
 

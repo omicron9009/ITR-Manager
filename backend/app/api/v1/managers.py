@@ -145,8 +145,8 @@ async def get_manager_team(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a manager's team of executives."""
-    # Managers can only view their own team; Partner can view any
-    if current_user.role == UserRole.MANAGER and current_user.id != manager_id:
+    # Managers can only view their own team; Partner or elevated manager can view any
+    if current_user.role == UserRole.MANAGER and current_user.id != manager_id and not getattr(current_user, "is_elevated", False):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Can only view your own team")
 
     mgr_result = await db.execute(select(User).where(User.id == manager_id, User.role == UserRole.MANAGER))
@@ -275,10 +275,9 @@ async def manager_assign_client_to_executive(
     """Manager assigns one of their clients to one of their executives."""
     # Validate manager scope
     if current_user.role == UserRole.MANAGER:
-        if current_user.id != manager_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Can only assign within your team")
-
         is_elevated = getattr(current_user, "is_elevated", False)
+        if current_user.id != manager_id and not is_elevated:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Can only assign within your team")
 
         # Ensure the executive belongs to this manager's team (elevated can use any executive)
         if not is_elevated:
@@ -327,10 +326,10 @@ async def manager_assign_client_to_executive(
 async def assign_client_to_mgr(
     manager_id: UUID,
     body: ManagerAssignClientRequest,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """Assign a client to a manager (Partner only)."""
+    """Assign a client to a manager (Partner or Elevated Manager)."""
     assignment = await assign_client_to_manager(
         db=db,
         manager_id=manager_id,
@@ -360,10 +359,10 @@ async def assign_client_to_mgr(
 async def remove_client_from_manager(
     manager_id: UUID,
     client_id: UUID,
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """Unassign a client from a manager (Partner only)."""
+    """Unassign a client from a manager (Partner or Elevated Manager)."""
     await unassign_client_from_manager(
         db=db,
         manager_id=manager_id,

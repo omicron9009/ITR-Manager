@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_active_client, get_current_manager_executive_or_partner, get_current_executive_or_partner, get_current_partner, get_current_user, get_current_dashboard_user_or_partner
+from app.core.security import get_current_active_client, get_current_manager_executive_or_partner, get_current_executive_or_partner, get_current_partner, get_current_partner_or_elevated_manager, get_current_user, get_current_dashboard_user_or_partner
 from app.database import get_db
 from app.enums import AccountStatus, CompletedDocStatus, CompletedDocType, ComputationStatus, DocumentStatus, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -335,13 +335,13 @@ async def _build_dashboard_summary(
     )
 
 
-# ─── GET /dashboard/pending-verification (Partner Only) ─────
+# ─── GET /dashboard/pending-verification (Partner or Elevated Manager) ─────
 @router.get("/pending-verification", response_model=PendingVerificationResponse)
 async def get_pending_verifications(
-    current_user: User = Depends(get_current_partner),
+    current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get list of clients awaiting verification (Partner only)."""
+    """Get list of clients awaiting verification (Partner or Elevated Manager)."""
     result = await db.execute(
         select(User, ClientProfile.referral_source, ClientProfile.referral_source_other, ClientProfile.city)
         .outerjoin(ClientProfile, ClientProfile.user_id == User.id)

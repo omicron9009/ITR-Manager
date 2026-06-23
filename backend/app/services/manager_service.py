@@ -400,7 +400,15 @@ async def ensure_manager_client_link(
     if existing_row:
         if existing_row.is_active:
             return  # Already linked
-        # Reactivate the existing inactive row
+        # Deactivate any other active manager for this client before reactivating
+        other = await db.execute(
+            select(ManagerClientAssignment).where(
+                ManagerClientAssignment.client_id == client_id,
+                ManagerClientAssignment.is_active == True,
+            )
+        )
+        for row in other.scalars().all():
+            row.is_active = False
         existing_row.is_active = True
         existing_row.assigned_by = assigned_by
     else:

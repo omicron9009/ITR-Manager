@@ -195,7 +195,7 @@ async def assign_executive(
     if client.account_status != AccountStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Client must be activated by Partner before assigning an executive",
+            detail="Client must be activated by a Partner or Elevated Manager before assigning an executive",
         )
 
     # Verify client is assigned to a manager
@@ -211,11 +211,15 @@ async def assign_executive(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Client must be assigned to a manager before assigning an executive. "
-                   "Partner must first assign the client to a manager via POST /managers/{id}/clients.",
+                   "Partner or Elevated Manager must first assign the client to a manager via POST /managers/{id}/clients.",
         )
 
-    # If Manager is assigning, verify the client belongs to them
-    if current_user.role == UserRole.MANAGER and mgr_client.manager_id != current_user.id:
+    # If Manager is assigning, verify the client belongs to them (elevated managers bypass this)
+    if (
+        current_user.role == UserRole.MANAGER
+        and not getattr(current_user, "is_elevated", False)
+        and mgr_client.manager_id != current_user.id
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This client is not assigned to you",

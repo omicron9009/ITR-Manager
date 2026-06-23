@@ -20,6 +20,7 @@ class UserResponse(BaseModel):
     full_name: str
     phone_number: Optional[str] = None
     role: str
+    is_elevated: bool = False
     account_status: str
     is_active: bool
     created_at: datetime
@@ -45,6 +46,7 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    is_elevated: bool = False
     recovery_codes: Optional[list[str]] = None
     email: Optional[str] = None
 
