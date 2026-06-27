@@ -1,5 +1,6 @@
 """ITR Filing Platform — FastAPI Application."""
 
+import asyncio
 import logging
 import time
 import uuid
@@ -67,8 +68,24 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("MinIO bucket initialization skipped — service may not be available")
 
+    # ── WhatsApp watchdog background task ──
+    watchdog_task = None
+    if settings.WHATSAPP_WATCHDOG_ENABLED:
+        watchdog_task = asyncio.create_task(_whatsapp_watchdog_loop())
+        logger.info(
+            "WhatsApp watchdog started (interval=%ds).",
+            settings.WHATSAPP_WATCHDOG_INTERVAL_SECONDS,
+        )
+
     yield
     # ── Shutdown ──
+    if watchdog_task is not None:
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("WhatsApp watchdog stopped.")
     await close_cache()
 
 
@@ -1073,6 +1090,34 @@ async def _seed_dashboard_user():
             logger.info(f"Dashboard user created: {settings.DASHBOARD_USER_EMAIL}")
     except Exception as e:
         logger.warning(f"Dashboard user seed skipped: {e}")
+
+
+async def _whatsapp_watchdog_loop():
+    """Background loop: poll WhatsApp session health and auto-reconnect.
+
+    Runs every WHATSAPP_WATCHDOG_INTERVAL_SECONDS. Never crashes — all
+    exceptions are caught and logged. Uses its own DB session per tick.
+    """
+    from app.database import AsyncSessionLocal
+    from app.services.whatsapp_service import watchdog_tick
+
+    # Initial delay: give OpenWA time to fully boot before first check
+    await asyncio.sleep(min(settings.WHATSAPP_WATCHDOG_INTERVAL_SECONDS, 60))
+
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                await watchdog_tick(db)
+                await db.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("WhatsApp watchdog tick failed: %s", e)
+
+        try:
+            await asyncio.sleep(settings.WHATSAPP_WATCHDOG_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
 
 
 async def _auto_bootstrap_whatsapp():
