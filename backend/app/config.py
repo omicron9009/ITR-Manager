@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     WHATSAPP_DEFAULT_BASE_URL: str = "http://openwa-api:2785"
     WHATSAPP_DEFAULT_SESSION_NAME: str = "itr-platform"
     WHATSAPP_HTTP_TIMEOUT_SECONDS: int = 10
+    # Watchdog: periodically polls OpenWA session status and auto-reconnects.
+    WHATSAPP_WATCHDOG_ENABLED: bool = True
+    WHATSAPP_WATCHDOG_INTERVAL_SECONDS: int = 300  # 5 minutes
     # OpenWA bootstrap admin key (used by the operator once to issue a
     # per-app API key that we then store in DB). Not consumed by backend
     # at runtime — exposed here so the deploy can read it from the same .env.

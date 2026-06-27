@@ -447,10 +447,26 @@ async def send_text(
     cfg = await get_active_config(db)
     if cfg is None or not cfg.openwa_session_id:
         raise WhatsAppServiceError("WhatsApp session not initialized.", status_code=400)
+
+    # If cached status is stale, refresh once from OpenWA before giving up
     if cfg.session_status != "ready":
-        raise WhatsAppServiceError(
-            f"WhatsApp session not ready (status={cfg.session_status}).", status_code=400
-        )
+        try:
+            async with _openwa_client(cfg) as c:
+                sr = await _request(c, "GET", f"/api/sessions/{cfg.openwa_session_id}")
+                if sr.is_success:
+                    live_status = sr.json().get("status")
+                    if live_status == "ready":
+                        await _persist_session_state(db, cfg, status="ready", mark_connected=True)
+                    else:
+                        raise WhatsAppServiceError(
+                            f"WhatsApp session not ready (status={live_status}).", status_code=400
+                        )
+        except WhatsAppServiceError:
+            raise
+        except Exception:
+            raise WhatsAppServiceError(
+                f"WhatsApp session not ready (status={cfg.session_status}).", status_code=400
+            )
 
     chat_id = format_chat_id(phone_e164)
     async with _openwa_client(cfg) as c:
@@ -472,3 +488,159 @@ async def send_test_message(db: AsyncSession, *, phone_e164: str, text: Optional
         firm_name=settings.FIRM_NAME,
     )
     return await send_text(db, phone_e164=phone_e164, text=body)
+
+
+# ───────────────────────────────────────────────────────────
+# Watchdog — periodic health check & auto-reconnect
+# ───────────────────────────────────────────────────────────
+_watchdog_last_alerted: Optional[str] = None  # guards duplicate alerts
+
+
+async def watchdog_tick(db: AsyncSession) -> None:
+    """Called periodically from the background watchdog task.
+
+    1. Polls OpenWA for the real session status.
+    2. If disconnected, attempts auto-reconnect (start session).
+    3. If reconnect fails (qr_ready/error), alerts the Partner once.
+    """
+    global _watchdog_last_alerted
+
+    cfg = await get_active_config(db)
+    if cfg is None or not cfg.openwa_session_id:
+        return  # Nothing to watch
+
+    previous_status = cfg.session_status
+
+    # ── Step 1: poll current status from OpenWA ──
+    try:
+        async with _openwa_client(cfg) as c:
+            resp = await _request(c, "GET", f"/api/sessions/{cfg.openwa_session_id}")
+    except WhatsAppServiceError:
+        # OpenWA unreachable — transient; don't overwrite persisted status.
+        logger.warning("WhatsApp watchdog: OpenWA unreachable, will retry next tick.")
+        return
+
+    if resp.status_code == 404:
+        # Session was deleted on OpenWA side
+        await _persist_session_state(db, cfg, status="disconnected", session_id=None)
+        cfg.openwa_session_id = None
+        await _notify_partner_session_lost(db, cfg, "Session no longer exists on OpenWA gateway.")
+        return
+
+    if not resp.is_success:
+        logger.warning("WhatsApp watchdog: unexpected status %s from OpenWA.", resp.status_code)
+        return
+
+    data = resp.json()
+    current_status = data.get("status") or "unknown"
+    phone = data.get("phone") if isinstance(data.get("phone"), str) else None
+    last_error = data.get("lastError") if isinstance(data.get("lastError"), str) else None
+
+    # ── Step 2: if already ready, persist and clear alert guard ──
+    if current_status == "ready":
+        await _persist_session_state(
+            db, cfg, status="ready", phone=phone, last_error=last_error, mark_connected=True
+        )
+        if _watchdog_last_alerted is not None:
+            logger.info("WhatsApp watchdog: session recovered to 'ready' (was %s).", _watchdog_last_alerted)
+            _watchdog_last_alerted = None
+        return
+
+    # ── Step 3: not ready — attempt auto-reconnect ──
+    logger.warning(
+        "WhatsApp watchdog: session status is '%s' (was '%s'). Attempting reconnect...",
+        current_status, previous_status,
+    )
+    try:
+        async with _openwa_client(cfg) as c:
+            start_resp = await _request(c, "POST", f"/api/sessions/{cfg.openwa_session_id}/start")
+    except WhatsAppServiceError as e:
+        logger.error("WhatsApp watchdog: reconnect HTTP call failed: %s", e.detail)
+        await _persist_session_state(db, cfg, status=current_status, last_error=str(e.detail))
+        await _notify_partner_session_lost(db, cfg, f"Auto-reconnect failed: {e.detail}")
+        return
+
+    if start_resp.is_success:
+        start_data = start_resp.json()
+        new_status = start_data.get("status") or current_status
+        if new_status == "ready":
+            await _persist_session_state(
+                db, cfg, status="ready",
+                phone=start_data.get("phone") or phone,
+                last_error=None, mark_connected=True,
+            )
+            logger.info("WhatsApp watchdog: auto-reconnect succeeded — session is 'ready'.")
+            _watchdog_last_alerted = None
+            # Record audit event
+            try:
+                from app.services.audit_service import record_audit_event
+                from app.enums import AuditEventType
+                await record_audit_event(
+                    db,
+                    event_type=AuditEventType.WHATSAPP_SESSION_AUTO_RECONNECTED,
+                    actor_id=cfg.configured_by,
+                    details={"previous_status": previous_status},
+                )
+            except Exception:
+                pass
+            return
+        else:
+            # Started but landed on qr_ready or other non-ready state
+            await _persist_session_state(db, cfg, status=new_status, last_error=last_error)
+    else:
+        # Start call returned error — maybe already starting or needs QR
+        await _persist_session_state(db, cfg, status=current_status, last_error=last_error)
+
+    # ── Step 4: couldn't recover — alert Partner ──
+    final_status = cfg.session_status
+    await _notify_partner_session_lost(
+        db, cfg,
+        f"Session status is '{final_status}'. "
+        + ("QR re-scan required — open WhatsApp settings in the app." if final_status == "qr_ready"
+           else "Auto-reconnect could not restore the session."),
+    )
+
+
+async def _notify_partner_session_lost(
+    db: AsyncSession, cfg: WhatsAppConfig, reason: str
+) -> None:
+    """Send an in-app + email notification to the Partner about session loss.
+    Only alerts once per disconnect event (guards with _watchdog_last_alerted).
+    """
+    global _watchdog_last_alerted
+
+    current_status = cfg.session_status or "disconnected"
+    if _watchdog_last_alerted == current_status:
+        return  # Already alerted for this state
+    _watchdog_last_alerted = current_status
+
+    logger.error("WhatsApp watchdog: SESSION LOST — %s", reason)
+
+    # Record audit event
+    try:
+        from app.services.audit_service import record_audit_event
+        from app.enums import AuditEventType
+        await record_audit_event(
+            db,
+            event_type=AuditEventType.WHATSAPP_SESSION_LOST,
+            actor_id=cfg.configured_by,
+            details={"status": current_status, "reason": reason[:500]},
+        )
+    except Exception:
+        pass
+
+    # In-app notification to the Partner who configured WhatsApp
+    if cfg.configured_by:
+        try:
+            from app.services.notification_service import create_notification
+            from app.enums import NotificationChannel
+            await create_notification(
+                db=db,
+                user_id=cfg.configured_by,
+                title="⚠️ WhatsApp Session Disconnected",
+                message=f"The WhatsApp gateway session has disconnected. {reason} "
+                        "Client notifications via WhatsApp will not be delivered until the session is restored.",
+                channel=NotificationChannel.BOTH,
+            )
+        except Exception as e:
+            logger.warning("WhatsApp watchdog: failed to create Partner alert notification: %s", e)
