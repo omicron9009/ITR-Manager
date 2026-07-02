@@ -286,6 +286,9 @@ async def _create_tables():
         # Migrate renamed enum values in existing data
         await _migrate_renamed_enum_values()
 
+        # Auto-activate any existing PENDING_VERIFICATION clients
+        await _activate_pending_clients()
+
         # Remove deprecated MANAGER tags from the database
         await _cleanup_manager_tags()
     except Exception as e:
@@ -976,6 +979,38 @@ async def _migrate_renamed_enum_values():
         logger.info("Enum value migration complete.")
     except Exception as e:
         logger.warning(f"Enum value migration failed: {e}")
+
+
+async def _activate_pending_clients():
+    """Activate all PENDING_VERIFICATION client accounts.
+
+    Registration now auto-activates clients. This migrates any existing
+    PENDING_VERIFICATION accounts so they can log in immediately.
+    Idempotent: safe to run on every startup.
+    """
+    import asyncpg
+
+    try:
+        conn = await asyncpg.connect(
+            host=settings.POSTGRES_HOST,
+            port=settings.POSTGRES_PORT,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            database=settings.POSTGRES_DB,
+        )
+
+        try:
+            result = await conn.execute(
+                "UPDATE users SET account_status = 'ACTIVE', "
+                "activated_at = COALESCE(activated_at, NOW()) "
+                "WHERE account_status = 'PENDING_VERIFICATION'"
+            )
+            if result and result != "UPDATE 0":
+                logger.info(f"Auto-activated pending clients: {result}")
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.warning(f"Pending client activation migration failed: {e}")
 
 
 async def _cleanup_manager_tags():
