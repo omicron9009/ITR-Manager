@@ -28,7 +28,7 @@ async def register_client(
     referral_source_other: Optional[str] = None,
     city: Optional[str] = None,
 ) -> User:
-    """Register a new client. Account starts in PENDING_VERIFICATION."""
+    """Register a new client. Account is auto-activated on registration."""
     # Check if email already exists
     existing = await db.execute(select(User).where(User.email == email))
     if existing.scalar_one_or_none():
@@ -38,19 +38,20 @@ async def register_client(
             detail="An account with this email already exists.",
         )
 
+    now = datetime.now(timezone.utc)
     user = User(
         email=email,
         full_name=full_name,
         password_hash=password_hash,
         phone_number=phone_number,
         role=UserRole.CLIENT,
-        account_status=AccountStatus.PENDING_VERIFICATION,
+        account_status=AccountStatus.ACTIVE,
+        activated_at=now,
     )
     db.add(user)
     await db.flush()
 
     # Create empty client profile with declaration timestamp
-    now = datetime.now(timezone.utc)
     profile = ClientProfile(
         user_id=user.id,
         declaration_accepted_at=now,
@@ -95,12 +96,12 @@ async def register_client(
         await create_notification(
             db=db,
             user_id=partner.id,
-            title=f"{full_name} — New Client Registration",
-            message=f"A new client ({full_name}) has registered and is awaiting verification. Please review their details and approve or reject.",
+            title=f"{full_name} — New Client Registered",
+            message=f"A new client ({full_name}) has registered and their account is now active.",
             related_client_id=user.id,
             client_name=full_name,
-            action_url_path="/clients/pending",
-            cta_label="Verify Client",
+            action_url_path=f"/clients/{user.id}",
+            cta_label="View Client",
             extra_details={"Email": email},
         )
 
