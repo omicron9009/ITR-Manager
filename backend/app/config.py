@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # Long-lived token for DASHBOARD_USER role (read-only TV/kiosk dashboards).
     # Default: 30 days (60 * 24 * 30 = 43,200 minutes). Override via env if needed.
     JWT_DASHBOARD_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 30
+    # Password reset link expiry (minutes)
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 15
+    # Rate limit: max reset requests per email per hour
+    PASSWORD_RESET_MAX_PER_HOUR: int = 5
 
     # Admin seed (created on first startup)
     ADMIN_EMAIL: str = "admin@itr-platform.com"
