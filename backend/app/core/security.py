@@ -69,6 +69,50 @@ def decode_token(token: str) -> dict:
         )
 
 
+# ─── Password Reset Token ───────────────────────────────────
+
+def create_password_reset_token(user_id: UUID, email: str) -> str:
+    """Create a short-lived JWT for password reset (email link flow)."""
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+    )
+    payload = {
+        "sub": str(user_id),
+        "email": email,
+        "purpose": "password_reset",
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_password_reset_token(token: str) -> dict:
+    """Decode and validate a password reset token.
+
+    Returns the payload dict or raises HTTPException on failure.
+    Validates that the token has the correct purpose claim.
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except JWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid or expired reset link: {str(e)}",
+        )
+
+    if payload.get("purpose") != "password_reset":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid token: not a password reset token",
+        )
+
+    return payload
+
+
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme),

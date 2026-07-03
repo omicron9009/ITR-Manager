@@ -1,11 +1,19 @@
 """API v1 — Auth endpoints (login, password management, user info)."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+import time
+from collections import defaultdict
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.security import (
     create_access_token,
+    create_password_reset_token,
+    decode_password_reset_token,
     get_current_partner,
     get_current_user,
     hash_password,
@@ -13,19 +21,24 @@ from app.core.security import (
     verify_password,
 )
 from app.database import get_db
+from app.enums import AuditEventType
 from app.models.user import User
 from app.schemas.user import (
     AdminGenerateRecoveryCodesRequest,
     ChangeEmailRequest,
     ChangeEmailResponse,
+    ForgotPasswordRequest,
     LoginRequest,
     PasswordChangeRequest,
     PasswordResetRequest,
     ProfileUpdateRequest,
     RecoveryCodesResponse,
+    ResetPasswordWithLinkRequest,
     TokenResponse,
     UserResponse,
 )
+from app.services.audit_service import record_audit_event
+from app.services.email_service import send_password_reset_email
 from app.services.recovery_code_service import (
     generate_recovery_codes,
     get_unused_code_count,
@@ -33,6 +46,12 @@ from app.services.recovery_code_service import (
 )
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+# ─── In-memory rate limiter for password reset requests ─────
+# Structure: {email: [timestamp1, timestamp2, ...]}
+_reset_rate_limit: dict[str, list[float]] = defaultdict(list)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -111,6 +130,143 @@ async def reset_password(
         "message": "Password has been reset successfully.",
         "remaining_recovery_codes": remaining,
     }
+
+
+# ─── Email Link Password Reset Flow ─────────────────────────
+
+def _check_rate_limit(email: str) -> None:
+    """Enforce rate limit: max N requests per email per hour."""
+    now = time.time()
+    one_hour_ago = now - 3600
+    # Prune old entries
+    _reset_rate_limit[email] = [
+        ts for ts in _reset_rate_limit[email] if ts > one_hour_ago
+    ]
+    if len(_reset_rate_limit[email]) >= settings.PASSWORD_RESET_MAX_PER_HOUR:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many password reset requests. Please try again later.",
+        )
+    _reset_rate_limit[email].append(now)
+
+
+@router.post("/forgot-password", response_model=dict)
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Request a password reset link sent to the user's email.
+
+    Rate-limited to prevent abuse. Returns error if email not found.
+    """
+    email_lower = body.email.lower()
+
+    # Rate limit check
+    _check_rate_limit(email_lower)
+
+    # Look up user
+    result = await db.execute(
+        select(User).where(User.email == email_lower, User.is_active == True)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active account found with this email address.",
+        )
+
+    # Generate reset token
+    reset_token = create_password_reset_token(user.id, user.email)
+    frontend_url = settings.FRONTEND_URL.rstrip("/")
+    reset_link = f"{frontend_url}/reset-password?token={reset_token}"
+
+    # Send email
+    email_sent = await send_password_reset_email(
+        to_email=user.email,
+        reset_link=reset_link,
+        user_name=user.full_name,
+        db=db,
+    )
+
+    if not email_sent:
+        logger.error(f"Password reset email failed to send for {email_lower}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send reset email. Please try again later or contact support.",
+        )
+
+    # Audit log
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.PASSWORD_RESET_REQUESTED,
+        actor_id=user.id,
+        details={"email": user.email, "method": "email_link"},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    await db.commit()
+
+    logger.info(f"Password reset link sent to {email_lower}")
+    return {"message": "Password reset link has been sent to your email."}
+
+
+@router.post("/reset-password-with-link", response_model=dict)
+async def reset_password_with_link(
+    body: ResetPasswordWithLinkRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset password using a token from the email reset link."""
+    # Decode and validate the reset token
+    payload = decode_password_reset_token(body.token)
+
+    user_id = payload.get("sub")
+    token_email = payload.get("email")
+
+    if not user_id or not token_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid reset token.",
+        )
+
+    # Fetch user
+    result = await db.execute(
+        select(User).where(User.id == UUID(user_id), User.is_active == True)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid reset token or account no longer active.",
+        )
+
+    # Verify that the email in the token still matches the user's current email
+    if user.email != token_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset link is no longer valid (email has changed).",
+        )
+
+    # Update password
+    user.password_hash = hash_password(body.new_password)
+    
+    # Audit log
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.PASSWORD_RESET_VIA_LINK,
+        actor_id=user.id,
+        details={"email": user.email, "method": "email_link"},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    await db.commit()
+    await invalidate_user_cache(user.id)
+
+    logger.info(f"Password reset via email link for {user.email}")
+    return {"message": "Password has been reset successfully. You can now log in with your new password."}
 
 
 @router.post("/change-password", response_model=dict)
