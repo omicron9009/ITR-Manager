@@ -492,12 +492,8 @@ async def get_document_upload_url(
     2. filing_id + document_type_id — create a NEW placeholder (additional file)
     """
     if body.document_id:
-        # Mode 1: existing placeholder — only clients upload to their own slots.
-        if current_user.role != UserRole.CLIENT:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Staff cannot upload documents to existing placeholders.",
-            )
+        # Mode 1: existing placeholder — clients or staff (Partner/Manager/Executive)
+        # can upload. Staff uploading on behalf of client is gated by enforce_filing_access below.
         doc_result = await db.execute(select(FilingDocument).where(FilingDocument.id == body.document_id))
         doc = doc_result.scalar_one_or_none()
         if not doc:
@@ -566,18 +562,13 @@ async def get_document_replace_url(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return a pre-signed PUT URL so a client can replace an existing document.
+    """Return a pre-signed PUT URL so a user can replace an existing document.
 
     Available for any document that has not yet been approved (PENDING_UPLOAD,
     UPLOADED, or REJECTED). Once approved the slot is locked — 403 is returned.
     Works in both DOCUMENT_UPLOAD and PROCESSING filing phases.
-    Client role only.
+    Clients upload their own docs; Partner/Manager/Executive can upload on behalf of client.
     """
-    if current_user.role != UserRole.CLIENT:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only clients can replace documents.",
-        )
 
     doc_result = await db.execute(select(FilingDocument).where(FilingDocument.id == document_id))
     doc = doc_result.scalar_one_or_none()
@@ -679,10 +670,8 @@ async def confirm_document_upload(
         )
 
     # APPROVED documents are permanently locked.
-    # Clients can also replace UPLOADED documents (pre-approval replacement).
-    allowed_upload_statuses = {DocumentStatus.PENDING_UPLOAD, DocumentStatus.REJECTED}
-    if current_user.role == UserRole.CLIENT:
-        allowed_upload_statuses.add(DocumentStatus.UPLOADED)
+    # Allow replacing UPLOADED documents (pre-approval replacement) for all roles.
+    allowed_upload_statuses = {DocumentStatus.PENDING_UPLOAD, DocumentStatus.REJECTED, DocumentStatus.UPLOADED}
     if doc_placeholder.status not in allowed_upload_statuses:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -724,6 +713,34 @@ async def confirm_document_upload(
     # Clear stale rejection reason when client replaces a previously rejected doc
     if doc.rejection_reason:
         doc.rejection_reason = None
+
+    # If staff uploaded on behalf of client, notify the client
+    if filing_for_doc and current_user.role in (UserRole.PARTNER, UserRole.MANAGER, UserRole.EXECUTIVE):
+        # Get document type name for notification
+        _doc_type_result = await db.execute(select(MasterDocumentType).where(MasterDocumentType.id == doc.document_type_id))
+        _doc_type_obj = _doc_type_result.scalar_one_or_none()
+        _doc_type_name = _doc_type_obj.name if _doc_type_obj else "a document"
+        await create_notification(
+            db=db,
+            user_id=filing_for_doc.client_id,
+            title="Document Uploaded on Your Behalf",
+            message=f"{current_user.full_name} has uploaded '{_doc_type_name}' on your behalf for FY {filing_for_doc.financial_year}.",
+            related_filing_id=filing_for_doc.id,
+            related_client_id=filing_for_doc.client_id,
+        )
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.DOCUMENT_UPLOADED,
+            actor_id=current_user.id,
+            client_id=filing_for_doc.client_id,
+            filing_id=filing_for_doc.id,
+            details={
+                "uploaded_on_behalf": True,
+                "document_id": str(doc.id),
+                "document_type": _doc_type_name,
+                "filename": filename,
+            },
+        )
 
     # If the client is uploading but no Executive is assigned yet, alert
     # Partner + active Manager so they can staff the engagement. The filing
