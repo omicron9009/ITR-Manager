@@ -93,6 +93,7 @@ async def set_text_field_value(
     field: FilingTextField,
     value: str,
     actor_id: UUID,
+    on_behalf: bool = False,
 ) -> FilingTextField:
     """Set/update the value on a text-field placeholder.
 
@@ -107,12 +108,16 @@ async def set_text_field_value(
     field.reviewed_at = None
     field.reviewed_by = None
 
+    details: dict = {"field_id": str(field.id), "field_type_id": str(field.field_type_id)}
+    if on_behalf:
+        details["filled_on_behalf"] = True
+
     await record_audit_event(
         db=db,
         event_type=AuditEventType.TEXT_FIELD_FILLED,
         actor_id=actor_id,
         filing_id=field.filing_id,
-        details={"field_id": str(field.id), "field_type_id": str(field.field_type_id)},
+        details=details,
     )
 
     await db.flush()

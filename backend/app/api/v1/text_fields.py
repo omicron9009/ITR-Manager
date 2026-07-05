@@ -465,7 +465,19 @@ async def update_text_field_value(
             detail=f"Value exceeds maximum length of {max_length} characters.",
         )
 
-    await set_text_field_value(db=db, field=field, value=body.value, actor_id=current_user.id)
+    is_staff = current_user.role in (UserRole.PARTNER, UserRole.MANAGER, UserRole.EXECUTIVE)
+    await set_text_field_value(db=db, field=field, value=body.value, actor_id=current_user.id, on_behalf=is_staff)
+
+    # Notify client when staff fills a text field on their behalf
+    if is_staff:
+        _field_type_name = field_type.name if field_type else "a text field"
+        await create_notification(
+            db=db,
+            user_id=filing.client_id,
+            title="Information Filled on Your Behalf",
+            message=f"{current_user.full_name} has filled '{_field_type_name}' on your behalf for FY {filing.financial_year}.",
+            related_filing_id=filing.id,
+        )
 
     await db.commit()
 
