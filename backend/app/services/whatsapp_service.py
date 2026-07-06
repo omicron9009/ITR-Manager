@@ -148,10 +148,9 @@ def format_whatsapp_body(
         parts.append(message_t)
 
     if cta_label and action_url_path:
-        full_url = settings.FRONTEND_URL.rstrip("/") + "/" + action_url_path.lstrip("/")
         parts.append("")
         parts.append(f"🔗 *{_clean(cta_label)}*")
-        parts.append(full_url)
+        parts.append("workpartners.co.in")
 
     if firm_name:
         parts.append("")
