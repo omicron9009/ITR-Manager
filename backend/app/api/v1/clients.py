@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.core.permissions import enforce_client_access
 from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_partner, get_current_partner_or_elevated_manager, get_current_user, hash_password
 from app.database import get_db
-from app.enums import AccountStatus, UserRole
+from app.enums import AccountStatus, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
 from app.models.executive_assignment import ExecutiveClientAssignment
 from app.models.filing import ITRFiling
@@ -162,8 +162,17 @@ async def toggle_no_fees(
     current_user: User = Depends(get_current_partner_or_elevated_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """Toggle no_fees_applicable for a client. Partner only."""
+    """Toggle no_fees_applicable for a client and update all active filings."""
+    from datetime import datetime, timezone
     from fastapi import HTTPException, status
+    from app.models.client_income_heads import ClientIncomeHeads
+    from app.services.audit_service import record_audit_event
+    from app.enums import AuditEventType
+    from app.services.engagement_letter_service import (
+        generate_engagement_letter_pdf,
+        upload_engagement_letter,
+        get_selected_income_heads,
+    )
 
     result = await db.execute(select(User).where(User.id == client_id, User.role == UserRole.CLIENT))
     client = result.scalar_one_or_none()
@@ -181,6 +190,64 @@ async def toggle_no_fees(
     if no_fees:
         profile.professional_fee = None  # Clear fee when no fees applicable
 
+    # Update all active filings (non-COMPLETED, non-HALTED)
+    filings_result = await db.execute(
+        select(ITRFiling).where(
+            ITRFiling.client_id == client_id,
+            ITRFiling.status.notin_([FilingStatus.COMPLETED, FilingStatus.HALTED]),
+        )
+    )
+    active_filings = filings_result.scalars().all()
+
+    # Fetch income heads for engagement letter regeneration
+    heads_result = await db.execute(
+        select(ClientIncomeHeads).where(ClientIncomeHeads.user_id == client_id)
+    )
+    client_income_heads = heads_result.scalar_one_or_none()
+    selected_heads = get_selected_income_heads(client_income_heads)
+
+    updated_filing_ids = []
+    for filing in active_filings:
+        filing.no_fees_applicable = no_fees
+        if no_fees:
+            filing.professional_fee = None
+        else:
+            # Restore fee from profile if available
+            filing.professional_fee = profile.professional_fee
+
+        # Regenerate engagement letter with updated fee terms
+        accepted_at = filing.engagement_accepted_at or datetime.now(timezone.utc)
+        pdf_bytes = generate_engagement_letter_pdf(
+            client_name=client.full_name,
+            financial_year=filing.financial_year,
+            professional_fee=filing.professional_fee,
+            accepted_at=accepted_at,
+            no_fees_applicable=no_fees,
+            income_heads=selected_heads,
+        )
+        engagement_key = upload_engagement_letter(
+            client_id=str(client_id),
+            client_name=client.full_name,
+            financial_year=filing.financial_year,
+            pdf_bytes=pdf_bytes,
+        )
+        filing.engagement_letter_key = engagement_key
+
+        # Audit trail
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.FILING_STATE_CHANGED,
+            actor_id=current_user.id,
+            client_id=client_id,
+            filing_id=filing.id,
+            details={
+                "action": "toggle_no_fees",
+                "no_fees_applicable": no_fees,
+                "financial_year": filing.financial_year,
+            },
+        )
+        updated_filing_ids.append(str(filing.id))
+
     await db.commit()
 
     status_label = "No Fees Applicable" if no_fees else "Fees Applicable"
@@ -188,6 +255,7 @@ async def toggle_no_fees(
         "message": f"Client {client.full_name} marked as '{status_label}'",
         "client_id": str(client_id),
         "no_fees_applicable": no_fees,
+        "updated_filings": updated_filing_ids,
     }
 
 
