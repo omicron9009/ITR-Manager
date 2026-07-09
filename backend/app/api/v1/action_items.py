@@ -20,6 +20,8 @@ router = APIRouter()
 async def list_action_items(
     type: Optional[ActionItemType] = Query(None, description="Filter by action item type"),
     filing_id: Optional[UUID] = Query(None, description="Filter by filing ID"),
+    partner_only: bool = Query(False, description="Partner scope: show only items requiring partner action"),
+    partner_tag_id: Optional[UUID] = Query(None, description="Filter by partner tag (clients with this partner_tag_id)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -30,12 +32,18 @@ async def list_action_items(
     - Partner: sees all actionable items across all clients
     - Executive: sees items for assigned clients only
     - Client: sees their own pending actions
+
+    Partner-specific filters:
+    - partner_only: only show items that require partner-level action
+    - partner_tag_id: only show items for clients tagged with this partner tag
     """
     items = await get_action_items(
         db=db,
         user=current_user,
         type_filter=type,
         filing_id_filter=filing_id,
+        partner_only=partner_only,
+        partner_tag_id=partner_tag_id,
     )
 
     # Build counts_by_type
