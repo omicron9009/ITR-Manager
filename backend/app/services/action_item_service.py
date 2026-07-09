@@ -48,16 +48,46 @@ _REQUIRED_COMPLETED_DOCS = {
     CompletedDocType.TAX_PAID_COMPUTATION,
 }
 
+# Action item types that specifically require partner-level action
+_PARTNER_ONLY_TYPES = {
+    ActionItemType.PARTNER_APPROVE_COMPUTATION,
+    ActionItemType.PARTNER_APPROVE_COMPLETED_DOCS,
+    ActionItemType.SET_PROFESSIONAL_FEE,
+    ActionItemType.UPLOAD_INVOICE,
+    ActionItemType.VERIFY_CLIENT,
+    ActionItemType.ASSIGN_EXECUTIVE,
+    ActionItemType.MARK_PAYMENT_RECEIVED,
+}
+
+
+async def _resolve_partner_tag_client_ids(
+    db: AsyncSession, partner_tag_id: UUID
+) -> list[UUID]:
+    """Get client (user) IDs whose client_profile has the given partner_tag_id."""
+    result = await db.execute(
+        select(ClientProfile.user_id).where(
+            ClientProfile.partner_tag_id == partner_tag_id,
+        )
+    )
+    return [row[0] for row in result.all()]
+
 
 async def get_action_items(
     db: AsyncSession,
     user: User,
     type_filter: Optional[ActionItemType] = None,
     filing_id_filter: Optional[UUID] = None,
+    partner_only: bool = False,
+    partner_tag_id: Optional[UUID] = None,
 ) -> list[ActionItemResponse]:
     """Compute action items for the given user based on their role."""
     if user.role == UserRole.PARTNER:
-        items = await _get_partner_items(db, filing_id_filter)
+        items = await _get_partner_items(
+            db, filing_id_filter,
+            partner_tag_id=partner_tag_id,
+        )
+        if partner_only:
+            items = [i for i in items if i.type in _PARTNER_ONLY_TYPES]
     elif user.role == UserRole.MANAGER:
         firm_wide = getattr(user, "is_elevated", False)
         items = await _get_manager_items(db, user.id, filing_id_filter, firm_wide=firm_wide)
@@ -80,12 +110,18 @@ async def get_action_items(
 
 
 async def _get_partner_items(
-    db: AsyncSession, filing_id_filter: Optional[UUID] = None
+    db: AsyncSession, filing_id_filter: Optional[UUID] = None,
+    partner_tag_id: Optional[UUID] = None,
 ) -> list[ActionItemResponse]:
     items: list[ActionItemResponse] = []
 
+    # Resolve tag-scoped client IDs if partner_tag_id is set
+    tag_scoped_client_ids: Optional[list[UUID]] = None
+    if partner_tag_id:
+        tag_scoped_client_ids = await _resolve_partner_tag_client_ids(db, partner_tag_id)
+
     if not filing_id_filter:
-        # 1. VERIFY_CLIENT — pending verification clients
+        # 1. VERIFY_CLIENT — pending verification clients (always shown regardless of tag)
         result = await db.execute(
             select(User).where(
                 User.role == UserRole.CLIENT,
@@ -105,7 +141,7 @@ async def _get_partner_items(
                 )
             )
 
-        # 2. ASSIGN_EXECUTIVE — active clients with no executive assignment
+        # 2. ASSIGN_EXECUTIVE — active clients with no executive assignment (always shown regardless of tag)
         assigned_subq = (
             select(ExecutiveClientAssignment.client_id)
             .where(ExecutiveClientAssignment.is_active == True)
@@ -131,8 +167,8 @@ async def _get_partner_items(
                 )
             )
 
-    # Filing-based items
-    filing_items = await _get_filing_items_for_staff(db, filing_id_filter, scoped_client_ids=None)
+    # Filing-based items (scoped by tag if set)
+    filing_items = await _get_filing_items_for_staff(db, filing_id_filter, scoped_client_ids=tag_scoped_client_ids)
     items.extend(filing_items)
 
     # PARTNER_APPROVE_COMPUTATION — computations awaiting partner approval
@@ -146,6 +182,8 @@ async def _get_partner_items(
     )
     if filing_id_filter:
         stmt = stmt.where(ITRFiling.id == filing_id_filter)
+    if tag_scoped_client_ids is not None:
+        stmt = stmt.where(ITRFiling.client_id.in_(tag_scoped_client_ids))
 
     result = await db.execute(stmt)
     filings_for_approval = result.scalars().unique().all()
@@ -183,6 +221,8 @@ async def _get_partner_items(
     )
     if filing_id_filter:
         fee_stmt = fee_stmt.where(ITRFiling.id == filing_id_filter)
+    if tag_scoped_client_ids is not None:
+        fee_stmt = fee_stmt.where(ITRFiling.client_id.in_(tag_scoped_client_ids))
 
     result = await db.execute(fee_stmt)
     filings_needing_fee = result.scalars().unique().all()
@@ -213,6 +253,8 @@ async def _get_partner_items(
     )
     if filing_id_filter:
         stmt = stmt.where(ITRFiling.id == filing_id_filter)
+    if tag_scoped_client_ids is not None:
+        stmt = stmt.where(ITRFiling.client_id.in_(tag_scoped_client_ids))
 
     result = await db.execute(stmt)
     filings_for_doc_approval = result.scalars().unique().all()
