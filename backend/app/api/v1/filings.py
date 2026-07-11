@@ -732,6 +732,10 @@ async def get_filing(
         )
     )
 
+    # Check if all mandatory internal working types are uploaded
+    from app.services.internal_working_service import check_mandatory_internal_workings
+    iw_ready, _ = await check_mandatory_internal_workings(db, filing.id)
+
     # Compute "pending_executive_assignment" — true when the filing has no
     # assigned executive AND no active ExecutiveClientAssignment exists for
     # the client. This is what gates `move-to-computation` and what the
@@ -769,6 +773,7 @@ async def get_filing(
         halted_at=filing.halted_at,
         halt_reason=filing.halt_reason,
         has_internal_workings=bool(iw_count and iw_count > 0),
+        internal_workings_ready=iw_ready,
         pending_executive_assignment=pending_executive_assignment,
         created_at=filing.created_at,
         updated_at=filing.updated_at,

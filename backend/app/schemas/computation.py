@@ -52,6 +52,7 @@ class ComputationListResponse(BaseModel):
     items: list[ComputationResponse]
     current_version: Optional[ComputationResponse] = None
     has_internal_workings: bool = False
+    internal_workings_ready: bool = False  # True when all mandatory types (AIS, TIS, 26AS) are uploaded
 
 
 class ComputationApproveRequest(BaseModel):

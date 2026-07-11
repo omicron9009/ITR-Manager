@@ -899,22 +899,26 @@ async def _get_client_items(
                 )
 
             # 14. CONFIRM_TAX_PAID — computation client-approved but tax not paid
+            #     Only show if mandatory internal working docs (AIS, TIS, 26AS) are uploaded
             has_client_approved_comp = any(
                 c.status in (ComputationStatus.CLIENT_APPROVED, ComputationStatus.APPROVED)
                 for c in filing.computations
             )
             if has_client_approved_comp and not filing.is_tax_paid:
-                items.append(
-                    ActionItemResponse(
-                        type=ActionItemType.CONFIRM_TAX_PAID,
-                        title="Confirm tax payment",
-                        description=f"FY {filing.financial_year}: Please confirm that you have paid the tax",
-                        priority=ActionItemPriority.HIGH,
-                        related_filing_id=filing.id,
-                        related_client_id=client_id,
-                        financial_year=filing.financial_year,
-                        action_url=f"/filings/{filing.id}/computation/approve",
+                from app.services.internal_working_service import check_mandatory_internal_workings
+                iw_ready, _ = await check_mandatory_internal_workings(db, filing.id)
+                if iw_ready:
+                    items.append(
+                        ActionItemResponse(
+                            type=ActionItemType.CONFIRM_TAX_PAID,
+                            title="Confirm tax payment",
+                            description=f"FY {filing.financial_year}: Please confirm that you have paid the tax",
+                            priority=ActionItemPriority.HIGH,
+                            related_filing_id=filing.id,
+                            related_client_id=client_id,
+                            financial_year=filing.financial_year,
+                            action_url=f"/filings/{filing.id}/computation/approve",
+                        )
                     )
-                )
 
     return items

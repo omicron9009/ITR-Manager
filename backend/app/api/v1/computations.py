@@ -328,10 +328,15 @@ async def get_filing_computations(
         )
     )
 
+    # Check if all mandatory internal working types are uploaded
+    from app.services.internal_working_service import check_mandatory_internal_workings
+    all_ready, _ = await check_mandatory_internal_workings(db, filing_id)
+
     return ComputationListResponse(
         items=items,
         current_version=current_version,
         has_internal_workings=bool(iw_count and iw_count > 0),
+        internal_workings_ready=all_ready,
     )
 
 
@@ -399,19 +404,15 @@ async def approve_computation(
 
         # Auto-transition filing to FILING state
         if filing.status == FilingStatus.COMPUTATION:
-            # Check mandatory internal working docs (active only)
-            from app.models.internal_working_doc import InternalWorkingDoc
-            iw_count = await db.scalar(
-                select(func.count()).select_from(InternalWorkingDoc)
-                .where(
-                    InternalWorkingDoc.filing_id == filing.id,
-                    InternalWorkingDoc.superseded_at.is_(None),
-                )
-            )
-            if not iw_count:
+            # Check mandatory internal working docs (AIS, TIS, 26AS)
+            from app.services.internal_working_service import check_mandatory_internal_workings
+            all_ready, missing_types = await check_mandatory_internal_workings(db, filing.id)
+            if not all_ready:
+                missing_names = ", ".join(t.value for t in missing_types)
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="Cannot advance to FILING: At least one Internal Working document must be uploaded before filing can proceed.",
+                    detail=f"Cannot advance to FILING: Mandatory internal working documents are missing: {missing_names}. "
+                           f"Please wait for your CA to upload these before confirming tax payment.",
                 )
             from app.services.filing_service import transition_filing_status
             filing = await transition_filing_status(
@@ -504,19 +505,15 @@ async def approve_computation(
 
     # Auto-transition filing to FILING state if tax is paid
     if body.is_tax_paid and filing.status == FilingStatus.COMPUTATION:
-        # Check mandatory internal working docs (active only)
-        from app.models.internal_working_doc import InternalWorkingDoc
-        iw_count = await db.scalar(
-            select(func.count()).select_from(InternalWorkingDoc)
-            .where(
-                InternalWorkingDoc.filing_id == filing.id,
-                InternalWorkingDoc.superseded_at.is_(None),
-            )
-        )
-        if not iw_count:
+        # Check mandatory internal working docs (AIS, TIS, 26AS)
+        from app.services.internal_working_service import check_mandatory_internal_workings
+        all_ready, missing_types = await check_mandatory_internal_workings(db, filing.id)
+        if not all_ready:
+            missing_names = ", ".join(t.value for t in missing_types)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Cannot advance to FILING: At least one Internal Working document must be uploaded before filing can proceed.",
+                detail=f"Cannot advance to FILING: Mandatory internal working documents are missing: {missing_names}. "
+                       f"Please wait for your CA to upload these before confirming tax payment.",
             )
         from app.services.filing_service import transition_filing_status
         filing = await transition_filing_status(
