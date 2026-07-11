@@ -380,7 +380,7 @@ async def _sync_pg_enums():
     from app.enums import (
         AccountStatus, FilingStatus, DocumentStatus, ComputationStatus,
         CompletedDocType, CompletedDocStatus, FormFieldType, AuditEventType, NotificationChannel, UserRole,
-        TagType, ReferralSource, IncomeHeadCategory, DocSubCategory, TextFieldStatus,
+        TagType, ReferralSource, IncomeHeadCategory, DocSubCategory, TextFieldStatus, InternalWorkingDocType,
     )
     enum_map = {
         "user_role": UserRole,
@@ -398,6 +398,7 @@ async def _sync_pg_enums():
         "income_head_category": IncomeHeadCategory,
         "doc_sub_category": DocSubCategory,
         "text_field_status": TextFieldStatus,
+        "internal_working_doc_type": InternalWorkingDocType,
     }
 
     try:
@@ -501,6 +502,8 @@ async def _sync_new_columns():
         # Internal working doc versioning (replace-without-delete)
         ("internal_working_docs", "replaces_id", "UUID", None),
         ("internal_working_docs", "superseded_at", "TIMESTAMPTZ", None),
+        # Internal working doc type (AIS, TIS, 26AS, OTHER) — nullable for backward compat
+        ("internal_working_docs", "doc_type", "internal_working_doc_type", None),
         # WhatsApp delivery tracking on notifications
         ("notifications", "whatsapp_sent", "BOOLEAN NOT NULL", "'false'"),
         ("notifications", "whatsapp_sent_at", "TIMESTAMPTZ", None),
@@ -644,6 +647,16 @@ async def _sync_new_columns():
                 )
                 logger.info("Created table 'filing_other_docs'")
 
+            # ─── Create internal_working_doc_type enum if missing ────────
+            iw_enum_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_type WHERE typname = 'internal_working_doc_type'"
+            )
+            if not iw_enum_exists:
+                await conn.execute(
+                    "CREATE TYPE internal_working_doc_type AS ENUM ('AIS', 'TIS', '26AS', 'OTHER')"
+                )
+                logger.info("Created enum type 'internal_working_doc_type'")
+
             # Ensure internal_working_docs table exists (for existing deployments)
             iw_table_exists = await conn.fetchval(
                 "SELECT 1 FROM information_schema.tables "
@@ -655,6 +668,7 @@ async def _sync_new_columns():
                         id UUID PRIMARY KEY,
                         filing_id UUID NOT NULL REFERENCES itr_filings(id) ON DELETE CASCADE,
                         file_id UUID NOT NULL REFERENCES stored_files(id) ON DELETE RESTRICT,
+                        doc_type internal_working_doc_type,
                         label VARCHAR(255),
                         uploaded_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
                         uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),

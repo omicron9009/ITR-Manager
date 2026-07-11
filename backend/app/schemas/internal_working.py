@@ -6,11 +6,14 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.enums import InternalWorkingDocType
+
 
 class InternalWorkingUploadRequest(BaseModel):
     filing_id: UUID
     filename: str
     content_type: str
+    doc_type: InternalWorkingDocType
     label: Optional[str] = None
 
 
@@ -37,6 +40,7 @@ class InternalWorkingResponse(BaseModel):
     id: UUID
     filing_id: UUID
     file_id: UUID
+    doc_type: Optional[InternalWorkingDocType] = None
     label: Optional[str] = None
     original_filename: Optional[str] = None
     uploaded_by: UUID

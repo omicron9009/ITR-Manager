@@ -81,6 +81,7 @@ async def confirm_internal_working_upload(
     filename: str,
     content_type: str,
     file_size: int,
+    doc_type: str,
     label: str = None,
     current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
@@ -89,6 +90,15 @@ async def confirm_internal_working_upload(
     filename = sanitize_filename(filename)
     validate_file_type(filename, content_type)
     validate_file_size(file_size)
+
+    from app.enums import InternalWorkingDocType
+    try:
+        doc_type_enum = InternalWorkingDocType(doc_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid doc_type: '{doc_type}'. Must be one of: AIS, TIS, 26AS, OTHER",
+        )
 
     from datetime import datetime, timezone
 
@@ -130,6 +140,7 @@ async def confirm_internal_working_upload(
     doc = InternalWorkingDoc(
         filing_id=filing_id,
         file_id=stored_file.id,
+        doc_type=doc_type_enum,
         label=label,
         uploaded_by=current_user.id,
         uploaded_at=datetime.now(timezone.utc),
@@ -143,7 +154,7 @@ async def confirm_internal_working_upload(
         client_id=filing.client_id,
         filing_id=filing.id,
         document_id=doc.id,
-        details={"type": "internal_working", "filename": filename, "label": label},
+        details={"type": "internal_working", "filename": filename, "label": label, "doc_type": doc_type},
     )
 
     await db.commit()
@@ -153,6 +164,7 @@ async def confirm_internal_working_upload(
         id=doc.id,
         filing_id=doc.filing_id,
         file_id=doc.file_id,
+        doc_type=doc.doc_type,
         label=doc.label,
         original_filename=filename,
         uploaded_by=doc.uploaded_by,
@@ -292,10 +304,11 @@ async def confirm_internal_working_replace(
     # Mark the old row as superseded (DO NOT delete MinIO object)
     old_doc.superseded_at = now
 
-    # Create the new active row, inheriting the old label
+    # Create the new active row, inheriting the old label and doc_type
     new_doc = InternalWorkingDoc(
         filing_id=old_doc.filing_id,
         file_id=new_stored_file.id,
+        doc_type=old_doc.doc_type,
         label=old_doc.label,
         uploaded_by=current_user.id,
         uploaded_at=now,
@@ -326,6 +339,7 @@ async def confirm_internal_working_replace(
         id=new_doc.id,
         filing_id=new_doc.filing_id,
         file_id=new_doc.file_id,
+        doc_type=new_doc.doc_type,
         label=new_doc.label,
         original_filename=filename,
         uploaded_by=new_doc.uploaded_by,
@@ -377,6 +391,7 @@ async def list_internal_workings(
             id=doc.id,
             filing_id=doc.filing_id,
             file_id=doc.file_id,
+            doc_type=doc.doc_type,
             label=doc.label,
             original_filename=stored.original_filename if stored else None,
             uploaded_by=doc.uploaded_by,

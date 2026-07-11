@@ -50,6 +50,7 @@ class FilingResponse(BaseModel):
     halted_at: Optional[datetime] = None
     halt_reason: Optional[str] = None
     has_internal_workings: bool = False
+    internal_workings_ready: bool = False  # True when all mandatory types (AIS, TIS, 26AS) uploaded
     pending_executive_assignment: bool = False
     created_at: datetime
     updated_at: datetime

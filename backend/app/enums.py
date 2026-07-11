@@ -47,6 +47,22 @@ class ComputationStatus(str, enum.Enum):
     SUPERSEDED = "SUPERSEDED"
 
 
+class InternalWorkingDocType(str, enum.Enum):
+    """Type of internal working document."""
+    AIS = "AIS"              # Annual Information Statement
+    TIS = "TIS"              # Taxpayer Information Summary
+    TWENTY_SIX_AS = "26AS"   # Form 26AS
+    OTHER = "OTHER"          # Any other internal document
+
+
+# Mandatory internal working doc types that must be uploaded before client can confirm tax payment
+MANDATORY_INTERNAL_WORKING_TYPES = {
+    InternalWorkingDocType.AIS,
+    InternalWorkingDocType.TIS,
+    InternalWorkingDocType.TWENTY_SIX_AS,
+}
+
+
 class CompletedDocType(str, enum.Enum):
     ITR_ACKNOWLEDGEMENT = "ITR_ACKNOWLEDGEMENT"
     INVOICE = "INVOICE"
