@@ -70,6 +70,9 @@ async def assign_document_placeholders(
     # Build set of doc types that already have at least one placeholder
     existing_type_ids: set[UUID] = {doc.document_type_id for doc in existing_docs}
 
+    # Deduplicate input to prevent creating multiple placeholders for the same type
+    document_type_ids = list(dict.fromkeys(document_type_ids))
+
     # Create placeholders only for doc types not yet present
     placeholders = list(existing_docs)
     for doc_type_id in document_type_ids:
@@ -84,6 +87,7 @@ async def assign_document_placeholders(
         )
         db.add(placeholder)
         placeholders.append(placeholder)
+        existing_type_ids.add(doc_type_id)
 
         await record_audit_event(
             db=db,
