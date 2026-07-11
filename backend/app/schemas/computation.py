@@ -13,6 +13,7 @@ class ComputationUploadRequest(BaseModel):
     filing_id: UUID
     filename: str
     content_type: str
+    replace: bool = False
 
 
 class ComputationUploadURLResponse(BaseModel):
@@ -20,6 +21,10 @@ class ComputationUploadURLResponse(BaseModel):
     computation_id: Optional[UUID] = None
     version: int
     object_key: str
+    is_replacement: bool = False
+    existing_computation_id: Optional[UUID] = None
+    requires_confirmation: bool = False
+    confirmation_message: Optional[str] = None
 
 
 class ComputationResponse(BaseModel):

@@ -35,7 +35,7 @@ from app.schemas.computation import (
 )
 from app.services.audit_service import record_audit_event
 from app.services.notification_service import create_notification, notify_partner_and_manager
-from app.services.storage_service import generate_object_key, get_presigned_download_url, get_presigned_upload_url, validate_object_key_prefix
+from app.services.storage_service import delete_object, generate_object_key, get_presigned_download_url, get_presigned_upload_url, validate_object_key_prefix
 
 router = APIRouter()
 
@@ -72,25 +72,101 @@ async def get_computation_upload_url(
     client_user_result = await db.execute(select(User).where(User.id == filing.client_id))
     client_user = client_user_result.scalar_one_or_none()
 
-    # Determine next version number
+    # Check latest computation to decide: replace in place vs new version
     version_result = await db.execute(
         select(FilingComputation)
         .where(FilingComputation.filing_id == body.filing_id)
         .order_by(FilingComputation.version.desc())
     )
     latest = version_result.scalars().first()
-    next_version = (latest.version + 1) if latest else 1
 
-    # Mark previous versions as SUPERSEDED
-    if latest and latest.status == ComputationStatus.UPLOADED:
-        latest.status = ComputationStatus.SUPERSEDED
-        await record_audit_event(
-            db=db,
-            event_type=AuditEventType.COMPUTATION_SUPERSEDED,
-            actor_id=current_user.id,
-            filing_id=body.filing_id,
-            document_id=latest.id,
-        )
+    is_replacement = False
+    existing_computation_id = None
+    next_version = 1
+
+    if latest:
+        if latest.status in (ComputationStatus.CLIENT_APPROVED, ComputationStatus.APPROVED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Computation already approved by client. Cannot upload a new version.",
+            )
+
+        if latest.status == ComputationStatus.PARTNER_APPROVED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Computation already approved by partner and sent to client for review. Cannot replace.",
+            )
+
+        if latest.status == ComputationStatus.REJECTED and latest.partner_approved_at is not None:
+            # Client rejected — create new version
+            next_version = latest.version + 1
+            is_replacement = False
+        elif latest.status in (
+            ComputationStatus.MANAGER_REJECTED,
+            ComputationStatus.REJECTED,  # Partner rejected (no partner_approved_at)
+        ):
+            # Manager/Partner rejected — replace in place (same version)
+            next_version = latest.version
+            is_replacement = True
+            existing_computation_id = latest.id
+        elif latest.status == ComputationStatus.MANAGER_APPROVED:
+            # Manager approved — only manager or partner can replace
+            if current_user.role == UserRole.EXECUTIVE:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Computation already approved by manager. Only a manager or partner can replace it.",
+                )
+            if not body.replace:
+                object_key = generate_object_key(
+                    client_id=str(filing.client_id),
+                    financial_year=filing.financial_year,
+                    folder="computation",
+                    filename=body.filename,
+                    client_name=client_user.full_name if client_user else "",
+                )
+                return ComputationUploadURLResponse(
+                    upload_url="",
+                    computation_id=None,
+                    version=latest.version,
+                    object_key=object_key,
+                    is_replacement=False,
+                    existing_computation_id=latest.id,
+                    requires_confirmation=True,
+                    confirmation_message=f"An active computation (v{latest.version}, status: {latest.status.value}) already exists. "
+                                         f"Set replace=true to replace it.",
+                )
+            next_version = latest.version
+            is_replacement = True
+            existing_computation_id = latest.id
+        elif latest.status == ComputationStatus.UPLOADED:
+            # Not yet reviewed — require replace flag
+            if not body.replace:
+                object_key = generate_object_key(
+                    client_id=str(filing.client_id),
+                    financial_year=filing.financial_year,
+                    folder="computation",
+                    filename=body.filename,
+                    client_name=client_user.full_name if client_user else "",
+                )
+                return ComputationUploadURLResponse(
+                    upload_url="",
+                    computation_id=None,
+                    version=latest.version,
+                    object_key=object_key,
+                    is_replacement=False,
+                    existing_computation_id=latest.id,
+                    requires_confirmation=True,
+                    confirmation_message=f"An active computation (v{latest.version}, status: {latest.status.value}) already exists. "
+                                         f"Set replace=true to replace it.",
+                )
+            # replace=true — replace in place
+            next_version = latest.version
+            is_replacement = True
+            existing_computation_id = latest.id
+        elif latest.status == ComputationStatus.SUPERSEDED:
+            # Superseded — allow new version
+            next_version = latest.version + 1
+            is_replacement = False
 
     object_key = generate_object_key(
         client_id=str(filing.client_id),
@@ -104,9 +180,11 @@ async def get_computation_upload_url(
 
     return ComputationUploadURLResponse(
         upload_url=upload_url,
-        computation_id=None,  # Created after the upload is confirmed
+        computation_id=None,
         version=next_version,
         object_key=object_key,
+        is_replacement=is_replacement,
+        existing_computation_id=existing_computation_id,
     )
 
 
@@ -119,6 +197,8 @@ async def confirm_computation_upload(
     content_type: str,
     file_size: int,
     version: int,
+    is_replacement: bool = False,
+    existing_computation_id: UUID | None = None,
     current_user: User = Depends(get_current_manager_executive_or_partner),
     db: AsyncSession = Depends(get_db),
 ):
@@ -130,6 +210,9 @@ async def confirm_computation_upload(
 
     from app.config import settings
     from datetime import datetime, timezone
+    import logging
+
+    logger = logging.getLogger(__name__)
 
     filing_result = await db.execute(select(ITRFiling).where(ITRFiling.id == filing_id))
     filing = filing_result.scalar_one_or_none()
@@ -162,34 +245,95 @@ async def confirm_computation_upload(
     db.add(stored_file)
     await db.flush()
 
-    # Create computation record
-    computation = FilingComputation(
-        filing_id=filing_id,
-        version=version,
-        file_id=stored_file.id,
-        status=ComputationStatus.UPLOADED,
-        uploaded_by=current_user.id,
-    )
-    db.add(computation)
+    if is_replacement and existing_computation_id:
+        # ── Replace in place: update existing computation record ──
+        comp_result = await db.execute(
+            select(FilingComputation).where(FilingComputation.id == existing_computation_id)
+        )
+        computation = comp_result.scalar_one_or_none()
+        if not computation or computation.filing_id != filing_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Existing computation not found for replacement.",
+            )
 
-    await db.flush()
+        # Delete old file from MinIO
+        old_file_result = await db.execute(
+            select(StoredFile).where(StoredFile.id == computation.file_id)
+        )
+        old_stored_file = old_file_result.scalar_one_or_none()
+        if old_stored_file:
+            try:
+                delete_object(old_stored_file.object_key)
+            except Exception:
+                logger.warning(
+                    "Failed to delete old computation file from MinIO: %s",
+                    old_stored_file.object_key,
+                    exc_info=True,
+                )
+
+        # Update the computation record in place
+        old_file_id = computation.file_id
+        computation.file_id = stored_file.id
+        computation.status = ComputationStatus.UPLOADED
+        computation.uploaded_by = current_user.id
+        computation.uploaded_at = datetime.now(timezone.utc)
+
+        # Reset all approval fields
+        computation.manager_approved_by = None
+        computation.manager_approved_at = None
+        computation.partner_approved_by = None
+        computation.partner_approved_at = None
+        computation.approved_by = None
+        computation.approved_at = None
+        # Rejection history is preserved (manager_rejected_by, rejected_by, etc.)
+
+        await db.flush()
+
+        audit_details = {
+            "version": computation.version,
+            "filename": filename,
+            "replaced": True,
+            "old_file_id": str(old_file_id),
+        }
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.COMPUTATION_REPLACED,
+            actor_id=current_user.id,
+            client_id=filing.client_id,
+            filing_id=filing_id,
+            document_id=computation.id,
+            details=audit_details,
+        )
+    else:
+        # ── New version: create new computation record ──
+        computation = FilingComputation(
+            filing_id=filing_id,
+            version=version,
+            file_id=stored_file.id,
+            status=ComputationStatus.UPLOADED,
+            uploaded_by=current_user.id,
+        )
+        db.add(computation)
+        await db.flush()
+
+        await record_audit_event(
+            db=db,
+            event_type=AuditEventType.COMPUTATION_UPLOADED,
+            actor_id=current_user.id,
+            client_id=filing.client_id,
+            filing_id=filing_id,
+            document_id=computation.id,
+            details={"version": version, "filename": filename},
+        )
 
     # Update filing timestamp
     filing.computation_uploaded_at = datetime.now(timezone.utc)
     filing.updated_by = current_user.id
 
-    await record_audit_event(
-        db=db,
-        event_type=AuditEventType.COMPUTATION_UPLOADED,
-        actor_id=current_user.id,
-        client_id=filing.client_id,
-        filing_id=filing_id,
-        document_id=computation.id,
-        details={"version": version, "filename": filename},
-    )
-
     # Notify manager for approval (if executive uploaded, notify their manager)
     # If manager or partner uploaded, notify partner directly
+    _action_label = "Re-uploaded" if is_replacement else "Uploaded"
     if current_user.role == UserRole.EXECUTIVE:
         # Find the manager for this executive
         mgr_assignment_result = await db.execute(
@@ -204,8 +348,8 @@ async def confirm_computation_upload(
             await create_notification(
                 db=db,
                 user_id=mgr_assignment.manager_id,
-                title=f"{_client_label} — Computation Uploaded — Review Required",
-                message=f"A computation (v{version}) has been uploaded by {current_user.full_name} for client {_client_label}, FY {filing.financial_year}. Please review and approve or reject.",
+                title=f"{_client_label} — Computation {_action_label} — Review Required",
+                message=f"A computation (v{version}) has been {_action_label.lower()} by {current_user.full_name} for client {_client_label}, FY {filing.financial_year}. Please review and approve or reject.",
                 related_filing_id=filing_id,
                 client_name=client_user.full_name if client_user else None,
                 financial_year=filing.financial_year,
@@ -214,7 +358,6 @@ async def confirm_computation_upload(
                 cta_label="Review Computation",
                 extra_details={"Version": version, "Filename": filename},
             )
-        # No manager — notification skipped (per platform policy)
     elif current_user.role == UserRole.MANAGER:
         # Manager uploaded — notify partner
         partner_result = await db.execute(
@@ -226,8 +369,8 @@ async def confirm_computation_upload(
             await create_notification(
                 db=db,
                 user_id=partner.id,
-                title=f"{_client_label} — Computation Uploaded — Review Required",
-                message=f"A computation (v{version}) has been uploaded by Manager {current_user.full_name} for client {_client_label}, FY {filing.financial_year}. Please review and approve.",
+                title=f"{_client_label} — Computation {_action_label} — Review Required",
+                message=f"A computation (v{version}) has been {_action_label.lower()} by Manager {current_user.full_name} for client {_client_label}, FY {filing.financial_year}. Please review and approve.",
                 related_filing_id=filing_id,
                 client_name=client_user.full_name if client_user else None,
                 financial_year=filing.financial_year,

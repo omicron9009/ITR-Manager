@@ -246,3 +246,11 @@ def get_presigned_download_url(
         expires=expires,
     )
     return url
+
+
+def delete_object(object_key: str) -> None:
+    """Delete an object from MinIO storage."""
+    _get_client().remove_object(
+        bucket_name=settings.MINIO_BUCKET_NAME,
+        object_name=object_key,
+    )
