@@ -34,8 +34,10 @@ class ClientProfile(Base):
     form_data = Column(JSONB, nullable=False, default=dict)
     form_submitted_at = Column(DateTime(timezone=True), nullable=True)
     declaration_accepted_at = Column(DateTime(timezone=True), nullable=True)
+    created_by_staff_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
-    user = relationship("User", back_populates="client_profile")
+    user = relationship("User", back_populates="client_profile", foreign_keys=[user_id])
+    created_by_staff = relationship("User", foreign_keys=[created_by_staff_id])

@@ -326,3 +326,82 @@ async def send_email_with_attachment(
     except Exception as e:
         logger.error(f"Failed to send email with attachment to {to_email}: {str(e)}", exc_info=True)
         return False
+
+
+async def send_welcome_credentials_email(
+    to_email: str,
+    user_name: str,
+    password: str,
+    created_by_name: str,
+    db: Optional[AsyncSession] = None,
+) -> bool:
+    """Send a welcome email with login credentials to a newly created client."""
+    frontend_url = settings.FRONTEND_URL.rstrip("/")
+    firm_name = html.escape(settings.FIRM_NAME)
+    firm_website = settings.FIRM_WEBSITE
+    firm_phone = settings.FIRM_PHONE
+    safe_name = html.escape(user_name)
+    safe_email = html.escape(to_email)
+    safe_password = html.escape(password)
+    safe_created_by = html.escape(created_by_name)
+
+    html_body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:'Segoe UI',Arial,sans-serif;">
+<div style="max-width:600px;margin:0 auto;background:#ffffff;">
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#1a56db 0%,#1e40af 100%);padding:28px 24px;text-align:center;">
+        <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:700;letter-spacing:0.5px;">{firm_name}</h1>
+        <p style="margin:4px 0 0;color:#bfdbfe;font-size:12px;">{settings.APP_NAME}</p>
+    </div>
+
+    <!-- Body -->
+    <div style="padding:28px 24px;">
+        <h2 style="margin:0 0 12px;color:#111827;font-size:18px;font-weight:600;">Welcome to {firm_name}!</h2>
+        <p style="margin:0 0 16px;color:#374151;font-size:14px;line-height:1.6;">
+            Hi {safe_name},<br><br>
+            Your account has been created by <strong>{safe_created_by}</strong>.
+            You can now log in and complete your onboarding to get started with your ITR filing.
+        </p>
+
+        <table style="width:100%;border-collapse:collapse;margin:16px 0;background:#f9fafb;border-radius:6px;overflow:hidden;">
+            <tr>
+                <td style="padding:10px 16px;font-weight:600;color:#374151;border-bottom:1px solid #e5e7eb;">Email</td>
+                <td style="padding:10px 16px;color:#1f2937;border-bottom:1px solid #e5e7eb;">{safe_email}</td>
+            </tr>
+            <tr>
+                <td style="padding:10px 16px;font-weight:600;color:#374151;">Password</td>
+                <td style="padding:10px 16px;color:#1f2937;font-family:monospace;font-size:15px;">{safe_password}</td>
+            </tr>
+        </table>
+
+        <p style="margin:16px 0;color:#dc2626;font-size:13px;font-weight:600;">
+            ⚠ Please change your password after your first login.
+        </p>
+
+        <div style="text-align:center;margin:24px 0;">
+            <a href="{frontend_url}" style="display:inline-block;background:#1a56db;color:#ffffff;
+               padding:14px 32px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px;">
+                Log In &rarr;
+            </a>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div style="background:#f9fafb;padding:20px 24px;border-top:1px solid #e5e7eb;">
+        <p style="margin:0 0 4px;color:#374151;font-size:13px;font-weight:600;">{firm_name}</p>
+        <p style="margin:0 0 4px;color:#6b7280;font-size:12px;">
+            {"<a href='https://" + firm_website + "' style='color:#1a56db;text-decoration:none;'>" + firm_website + "</a> &nbsp;|&nbsp; " if firm_website else ""}
+            {firm_phone if firm_phone else ""}
+        </p>
+        <p style="margin:12px 0 0;color:#9ca3af;font-size:11px;">
+            This is an automated email. Please do not reply.
+        </p>
+    </div>
+</div>
+</body>
+</html>"""
+
+    subject = f"{settings.FIRM_NAME} — Your Account Credentials"
+    return await send_email(to_email=to_email, subject=subject, body_html=html_body, db=db)

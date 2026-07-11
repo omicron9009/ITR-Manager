@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.permissions import enforce_client_access
-from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_partner, get_current_partner_or_elevated_manager, get_current_user, hash_password
+from app.core.security import get_current_active_client, get_current_executive_or_partner, get_current_manager_executive_or_partner, get_current_manager_or_partner, get_current_partner, get_current_partner_or_elevated_manager, get_current_user, hash_password
 from app.database import get_db
 from app.enums import AccountStatus, FilingStatus, UserRole
 from app.models.client_profile import ClientProfile
@@ -18,6 +18,8 @@ from app.models.filing import ITRFiling
 from app.models.user import User
 from app.schemas.user import (
     ClientActivationRequest,
+    ClientCreateRequest,
+    ClientCreateResponse,
     ClientListItem,
     ClientListResponse,
     ClientProfileResponse,
@@ -28,9 +30,67 @@ from app.schemas.user import (
     IncomeHeadsResponse,
     IncomeHeadsUpdateRequest,
 )
-from app.services.client_service import activate_client, register_client, reject_client
+from app.services.client_service import activate_client, create_client_by_staff, register_client, reject_client
 
 router = APIRouter()
+
+
+# ─── POST /clients/create ────────────────────────────────────
+@router.post("/create", response_model=ClientCreateResponse, status_code=201)
+async def create_client(
+    body: ClientCreateRequest,
+    current_user: User = Depends(get_current_manager_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a client account (Manager/Partner). Password defaults to aikar@<firstname>."""
+    first_name = body.full_name.strip().split()[0].lower()
+    default_password = f"aikar@{first_name}"
+
+    user = await create_client_by_staff(
+        db=db,
+        email=body.email,
+        full_name=body.full_name,
+        password_hash=hash_password(default_password),
+        created_by=current_user,
+        phone_number=body.phone_number,
+        income_heads={
+            "salary": body.salary,
+            "esop": body.esop,
+            "rental_income": body.rental_income,
+            "more_than_2_properties": body.more_than_2_properties,
+            "capital_gain_shares": body.capital_gain_shares,
+            "capital_gain_land": body.capital_gain_land,
+            "business_profession": body.business_profession,
+            "interest_dividend": body.interest_dividend,
+            "foreign_assets": body.foreign_assets,
+            "any_other": body.any_other,
+            "any_other_text": body.any_other_text if body.any_other else None,
+        },
+        city=body.city,
+        manager_id=body.manager_id,
+    )
+
+    # Send welcome email with credentials
+    from app.services.email_service import send_welcome_credentials_email
+    await send_welcome_credentials_email(
+        to_email=body.email,
+        user_name=body.full_name,
+        password=default_password,
+        created_by_name=current_user.full_name,
+        db=db,
+    )
+
+    from app.core.cache import NS, bump_version
+    await bump_version(NS.CLIENT_LIST)
+    await bump_version(NS.DASHBOARD_SUMMARY)
+
+    return ClientCreateResponse(
+        id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        account_status=user.account_status.value,
+        default_password=default_password,
+    )
 
 
 # ─── POST /clients/register ─────────────────────────────────
@@ -360,6 +420,10 @@ async def list_clients(
         False,
         description="Only ACTIVE clients who have NOT yet submitted the onboarding form",
     ),
+    staff_created: Optional[bool] = Query(
+        None,
+        description="Filter: true = only staff-created clients, false = only self-registered",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -382,7 +446,7 @@ async def list_clients(
         account_status = AccountStatus.ACTIVE
 
     # Cache key encodes the full filter + user scope
-    cache_key = f"{current_user.id}:{page}:{page_size}:{search}:{account_status}:{financial_year}:{partner_tag_id}:{onboarded_pending_filing}:{activated_not_onboarded}"
+    cache_key = f"{current_user.id}:{page}:{page_size}:{search}:{account_status}:{financial_year}:{partner_tag_id}:{onboarded_pending_filing}:{activated_not_onboarded}:{staff_created}"
     cached = await cache_get(NS.CLIENT_LIST, cache_key)
     if cached is not _MISS:
         return cached
@@ -460,6 +524,18 @@ async def list_clients(
         ).scalar_subquery()
         query = query.where(User.id.notin_(submitted_sub))
 
+    # Staff-created filter
+    if staff_created is True:
+        staff_sub = select(ClientProfile.user_id).where(
+            ClientProfile.created_by_staff_id.isnot(None)
+        ).scalar_subquery()
+        query = query.where(User.id.in_(staff_sub))
+    elif staff_created is False:
+        staff_sub = select(ClientProfile.user_id).where(
+            ClientProfile.created_by_staff_id.isnot(None)
+        ).scalar_subquery()
+        query = query.where(User.id.notin_(staff_sub))
+
     # Count
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -495,19 +571,17 @@ async def list_clients(
         )
         exec_name_by_id = {row[0]: row[1] for row in exec_rows.all()}
 
-    # ── Batch-fetch manager assignments (executive → manager) ──
-    from app.models.manager_executive_assignment import ManagerExecutiveAssignment
-    mgr_by_exec: dict = {}
-    if exec_ids:
-        mgr_assign_result = await db.execute(
-            select(ManagerExecutiveAssignment.executive_id, ManagerExecutiveAssignment.manager_id).where(
-                ManagerExecutiveAssignment.executive_id.in_(exec_ids),
-                ManagerExecutiveAssignment.is_active == True,
-            )
+    # ── Batch-fetch manager assignments (direct: ManagerClientAssignment) ──
+    from app.models.manager_client_assignment import ManagerClientAssignment
+    mgr_assign_result = await db.execute(
+        select(ManagerClientAssignment.client_id, ManagerClientAssignment.manager_id).where(
+            ManagerClientAssignment.client_id.in_(user_ids),
+            ManagerClientAssignment.is_active == True,
         )
-        mgr_by_exec = {row[0]: row[1] for row in mgr_assign_result.all()}
+    )
+    mgr_by_client: dict = {row[0]: row[1] for row in mgr_assign_result.all()}
 
-    mgr_ids = list(set(mgr_by_exec.values()))
+    mgr_ids = list(set(mgr_by_client.values()))
     mgr_name_by_id: dict = {}
     if mgr_ids:
         mgr_rows = await db.execute(
@@ -535,14 +609,18 @@ async def list_clients(
             ClientProfile.user_id,
             ClientProfile.partner_tag_id,
             ClientProfile.form_submitted_at,
+            ClientProfile.created_by_staff_id,
         ).where(ClientProfile.user_id.in_(user_ids))
     )
     partner_tag_by_client: dict = {}
     form_submitted_by_client: dict = {}
-    for row_user_id, row_tag_id, row_form_submitted in profile_rows_result.all():
+    created_by_staff_by_client: dict = {}
+    for row_user_id, row_tag_id, row_form_submitted, row_staff_id in profile_rows_result.all():
         if row_tag_id is not None:
             partner_tag_by_client[row_user_id] = row_tag_id
         form_submitted_by_client[row_user_id] = row_form_submitted
+        if row_staff_id is not None:
+            created_by_staff_by_client[row_user_id] = row_staff_id
     tag_ids = list(set(partner_tag_by_client.values()))
     tag_name_by_id: dict = {}
     if tag_ids:
@@ -551,22 +629,28 @@ async def list_clients(
         )
         tag_name_by_id = {row[0]: row[1] for row in tag_rows.all()}
 
+    # Batch-fetch staff creator names
+    staff_ids = list(set(created_by_staff_by_client.values()))
+    staff_name_by_id: dict = {}
+    if staff_ids:
+        staff_rows = await db.execute(
+            select(User.id, User.full_name).where(User.id.in_(staff_ids))
+        )
+        staff_name_by_id = {row[0]: row[1] for row in staff_rows.all()}
+
     # Build response items
     items = []
     for user in users:
         assignment = assignments_by_client.get(user.id)
         exec_name = None
         exec_id = None
-        mgr_id = None
-        mgr_name = None
         if assignment:
             exec_id = assignment.executive_id
             exec_name = exec_name_by_id.get(exec_id)
-            # Resolve manager from executive
-            _mgr_id = mgr_by_exec.get(exec_id)
-            if _mgr_id:
-                mgr_id = _mgr_id
-                mgr_name = mgr_name_by_id.get(_mgr_id)
+
+        # Resolve manager directly from ManagerClientAssignment
+        mgr_id = mgr_by_client.get(user.id)
+        mgr_name = mgr_name_by_id.get(mgr_id) if mgr_id else None
 
         user_filings = filings_by_client.get(user.id, [])
         active_years = [f[0] for f in user_filings]
@@ -589,6 +673,8 @@ async def list_clients(
                 current_state=current_state,
                 last_updated=user.updated_at,
                 form_submitted_at=form_submitted_by_client.get(user.id),
+                created_by_staff_id=created_by_staff_by_client.get(user.id),
+                created_by_staff_name=staff_name_by_id.get(created_by_staff_by_client.get(user.id)),
             )
         )
 
@@ -673,21 +759,21 @@ async def get_client_profile(
             exec_id = exec_user.id
             exec_name = exec_user.full_name
 
-        # Resolve manager via executive → manager assignment chain
-        from app.models.manager_executive_assignment import ManagerExecutiveAssignment
-        mgr_assign_result = await db.execute(
-            select(ManagerExecutiveAssignment).where(
-                ManagerExecutiveAssignment.executive_id == assignment.executive_id,
-                ManagerExecutiveAssignment.is_active == True,
-            )
+    # Resolve manager directly from ManagerClientAssignment
+    from app.models.manager_client_assignment import ManagerClientAssignment
+    mgr_assign_result = await db.execute(
+        select(ManagerClientAssignment).where(
+            ManagerClientAssignment.client_id == client_id,
+            ManagerClientAssignment.is_active == True,
         )
-        mgr_assign = mgr_assign_result.scalar_one_or_none()
-        if mgr_assign:
-            mgr_user_result = await db.execute(select(User).where(User.id == mgr_assign.manager_id))
-            mgr_user = mgr_user_result.scalar_one_or_none()
-            if mgr_user:
-                mgr_id = mgr_user.id
-                mgr_name = mgr_user.full_name
+    )
+    mgr_assign = mgr_assign_result.scalar_one_or_none()
+    if mgr_assign:
+        mgr_user_result = await db.execute(select(User).where(User.id == mgr_assign.manager_id))
+        mgr_user = mgr_user_result.scalar_one_or_none()
+        if mgr_user:
+            mgr_id = mgr_user.id
+            mgr_name = mgr_user.full_name
 
     from app.schemas.user import ClientProfileResponse, IncomeHeadsResponse
 
@@ -704,6 +790,11 @@ async def get_client_profile(
         from app.models.tag import Tag
         tag_result = await db.execute(select(Tag.name).where(Tag.id == profile.partner_tag_id))
         partner_tag_name = tag_result.scalar()
+
+    created_by_staff_name = None
+    if profile.created_by_staff_id:
+        staff_result = await db.execute(select(User.full_name).where(User.id == profile.created_by_staff_id))
+        created_by_staff_name = staff_result.scalar()
 
     return ClientProfileResponse(
         id=profile.id,
@@ -730,6 +821,8 @@ async def get_client_profile(
         professional_fee=profile.professional_fee,
         partner_tag_id=profile.partner_tag_id,
         partner_tag_name=partner_tag_name,
+        created_by_staff_id=profile.created_by_staff_id,
+        created_by_staff_name=created_by_staff_name,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
     )
