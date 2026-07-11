@@ -21,6 +21,7 @@ from app.schemas.filing import (
     ConfirmIncomeHeadsRequest,
     ConfirmIncomeHeadsResponse,
     FilingHaltRequest,
+    FilingInitiateForClientRequest,
     FilingInitiateRequest,
     FilingListResponse,
     FilingResponse,
@@ -38,6 +39,26 @@ from app.services.filing_service import (
 from app.services.notification_service import create_notification, notify_partner_and_manager
 
 router = APIRouter()
+
+
+async def _resolve_manager_for_client(
+    db: AsyncSession, client_id: UUID
+) -> tuple[Optional[UUID], Optional[str]]:
+    """Return (manager_id, manager_name) for a client via ManagerClientAssignment."""
+    from app.models.manager_client_assignment import ManagerClientAssignment
+
+    result = await db.execute(
+        select(ManagerClientAssignment).where(
+            ManagerClientAssignment.client_id == client_id,
+            ManagerClientAssignment.is_active == True,
+        )
+    )
+    assignment = result.scalar_one_or_none()
+    if not assignment:
+        return None, None
+    mgr_result = await db.execute(select(User).where(User.id == assignment.manager_id))
+    mgr = mgr_result.scalar_one_or_none()
+    return (assignment.manager_id, mgr.full_name) if mgr else (assignment.manager_id, None)
 
 
 # ─── POST /filings/initiate ─────────────────────────────────
@@ -193,6 +214,13 @@ async def initiate_filing(
     )
 
     await db.flush()
+    mgr_id, mgr_name = await _resolve_manager_for_client(db, filing.client_id)
+    exec_name = None
+    if filing.assigned_executive_id:
+        exec_result = await db.execute(select(User).where(User.id == filing.assigned_executive_id))
+        exec_user = exec_result.scalar_one_or_none()
+        if exec_user:
+            exec_name = exec_user.full_name
     return FilingResponse(
         id=filing.id,
         client_id=filing.client_id,
@@ -200,6 +228,9 @@ async def initiate_filing(
         financial_year=filing.financial_year,
         status=filing.status,
         assigned_executive_id=filing.assigned_executive_id,
+        assigned_executive_name=exec_name,
+        assigned_manager_id=mgr_id,
+        assigned_manager_name=mgr_name,
         initiated_at=filing.initiated_at,
         is_tax_paid=filing.is_tax_paid,
         tax_paid_at=filing.tax_paid_at,
@@ -263,6 +294,283 @@ async def _send_engagement_letter_email(
     except Exception as e:
         import logging
         logging.getLogger("app").error(f"Failed to email engagement letter to {client_email}: {e}")
+
+
+# ─── POST /filings/initiate-for-client ──────────────────────
+@router.post("/initiate-for-client", response_model=FilingResponse, status_code=201)
+async def initiate_filing_for_client(
+    body: FilingInitiateForClientRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_manager_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Initiate an ITR filing on behalf of a client (Manager/Partner).
+    Client must be ACTIVE with onboarding form submitted.
+    """
+    from datetime import datetime, timezone
+    from app.models.client_income_heads import ClientIncomeHeads
+    from app.models.executive_assignment import ExecutiveClientAssignment
+    from app.services.engagement_letter_service import (
+        generate_engagement_letter_pdf,
+        get_selected_income_heads,
+        upload_engagement_letter,
+    )
+
+    # Verify client exists and is active
+    client_result = await db.execute(
+        select(User).where(User.id == body.client_id, User.role == UserRole.CLIENT)
+    )
+    client = client_result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    if client.account_status != AccountStatus.ACTIVE:
+        raise AccountNotActiveError()
+
+    await enforce_client_access(db, current_user, body.client_id)
+
+    # Check duplicate
+    await check_duplicate_filing(db, body.client_id, body.financial_year)
+
+    # Check onboarding form
+    profile_result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == body.client_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if not profile or not profile.form_submitted_at:
+        raise OnboardingFormNotSubmittedError()
+
+    is_no_fees = profile.no_fees_applicable
+
+    # Fetch income heads
+    heads_result = await db.execute(
+        select(ClientIncomeHeads).where(ClientIncomeHeads.user_id == body.client_id)
+    )
+    client_income_heads = heads_result.scalar_one_or_none()
+    selected_heads = get_selected_income_heads(client_income_heads)
+
+    now = datetime.now(timezone.utc)
+    pdf_bytes = generate_engagement_letter_pdf(
+        client_name=client.full_name,
+        financial_year=body.financial_year,
+        professional_fee=profile.professional_fee,
+        accepted_at=now,
+        no_fees_applicable=is_no_fees,
+        income_heads=selected_heads,
+    )
+    engagement_key = upload_engagement_letter(
+        client_id=str(body.client_id),
+        client_name=client.full_name,
+        financial_year=body.financial_year,
+        pdf_bytes=pdf_bytes,
+    )
+
+    # Create filing
+    filing = ITRFiling(
+        client_id=body.client_id,
+        financial_year=body.financial_year,
+        status=FilingStatus.INITIATED,
+        created_by=current_user.id,
+        professional_fee=profile.professional_fee,
+        no_fees_applicable=is_no_fees,
+        engagement_accepted_at=now,
+        engagement_letter_key=engagement_key,
+    )
+    db.add(filing)
+    await db.flush()
+
+    # State history
+    history = FilingStateHistory(
+        filing_id=filing.id,
+        from_status=None,
+        to_status=FilingStatus.INITIATED,
+        changed_by=current_user.id,
+        remarks=f"Filing initiated by {current_user.full_name} ({current_user.role.value}) on behalf of client",
+    )
+    db.add(history)
+
+    # Audit log
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.FILING_INITIATED,
+        actor_id=current_user.id,
+        client_id=body.client_id,
+        filing_id=filing.id,
+        details={
+            "financial_year": body.financial_year,
+            "initiated_by": current_user.full_name,
+            "initiated_by_role": current_user.role.value,
+        },
+        ip_address=request.client.host if request.client else None,
+    )
+
+    # Notify partner (if manager initiated)
+    if current_user.role == UserRole.MANAGER:
+        await notify_partner_and_manager(
+            db=db,
+            client_id=body.client_id,
+            title="New ITR Filing Initiated",
+            message=f"An ITR Filing has been initiated by {current_user.full_name} for client {client.full_name}, FY {body.financial_year}.",
+            related_filing_id=filing.id,
+            related_client_id=body.client_id,
+            client_name=client.full_name,
+            financial_year=body.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}",
+            cta_label="View Filing",
+        )
+
+    # Assign executive if one exists
+    exec_result = await db.execute(
+        select(ExecutiveClientAssignment).where(
+            ExecutiveClientAssignment.client_id == body.client_id,
+            ExecutiveClientAssignment.is_active == True,
+        )
+    )
+    exec_assignment = exec_result.scalar_one_or_none()
+    if exec_assignment:
+        filing.assigned_executive_id = exec_assignment.executive_id
+        await create_notification(
+            db=db,
+            user_id=exec_assignment.executive_id,
+            title=f"{client.full_name} — New ITR Filing Initiated",
+            message=f"An ITR Filing has been initiated for {client.full_name}, FY {body.financial_year}. Please send the document checklist.",
+            related_filing_id=filing.id,
+            related_client_id=body.client_id,
+            client_name=client.full_name,
+            financial_year=body.financial_year,
+            action_by=current_user.full_name,
+            action_url_path=f"/filings/{filing.id}/documents/assign",
+            cta_label="Send Document Checklist",
+        )
+
+    # Notify client
+    await create_notification(
+        db=db,
+        user_id=body.client_id,
+        title="Filing Initiated",
+        message=f"Your ITR Filing for FY {body.financial_year} has been initiated by {current_user.full_name}. Your document checklist is ready.",
+        related_filing_id=filing.id,
+        financial_year=body.financial_year,
+        action_url_path=f"/filings/{filing.id}",
+        cta_label="View My Filing",
+    )
+
+    # ── Auto-assign BASE document & text field placeholders from income heads ──
+    from app.enums import DocSubCategory, IncomeHeadCategory, INCOME_HEAD_FLAG_FIELDS
+    from app.services.document_service import (
+        assign_document_placeholders,
+        resolve_doc_types_for_income_heads,
+    )
+    from app.services.text_field_service import (
+        assign_text_field_placeholders,
+        resolve_text_field_types_for_income_heads,
+    )
+
+    # Build income heads snapshot from the client's existing data
+    income_heads_payload = {}
+    if client_income_heads:
+        for head, field in INCOME_HEAD_FLAG_FIELDS.items():
+            income_heads_payload[field] = getattr(client_income_heads, field, False)
+        if hasattr(client_income_heads, "any_other_text"):
+            income_heads_payload["any_other_text"] = client_income_heads.any_other_text
+
+    # Snapshot onto filing
+    filing.income_heads_snapshot = income_heads_payload
+    filing.income_heads_confirmed_at = now
+
+    # Resolve selected income head categories
+    income_head_categories: list[IncomeHeadCategory] = []
+    for head, field in INCOME_HEAD_FLAG_FIELDS.items():
+        if income_heads_payload.get(field):
+            income_head_categories.append(head)
+
+    # Assign BASE document placeholders
+    if income_head_categories:
+        base_doc_type_ids = await resolve_doc_types_for_income_heads(
+            db=db,
+            heads=income_head_categories,
+            sub_category=DocSubCategory.BASE,
+            only_active=True,
+        )
+        if base_doc_type_ids:
+            await assign_document_placeholders(
+                db=db,
+                filing_id=filing.id,
+                document_type_ids=base_doc_type_ids,
+                assigned_by=current_user.id,
+            )
+
+        # Assign BASE text field placeholders
+        base_text_field_type_ids = await resolve_text_field_types_for_income_heads(
+            db=db,
+            heads=income_head_categories,
+            sub_category=DocSubCategory.BASE,
+            only_active=True,
+        )
+        if base_text_field_type_ids:
+            await assign_text_field_placeholders(
+                db=db,
+                filing_id=filing.id,
+                field_type_ids=base_text_field_type_ids,
+                assigned_by=current_user.id,
+            )
+
+    # Auto-transition INITIATED → DOCUMENT_UPLOAD
+    await transition_filing_status(
+        db=db,
+        filing=filing,
+        to_status=FilingStatus.DOCUMENT_UPLOAD,
+        changed_by=current_user.id,
+        remarks=f"Auto-transitioned to DOCUMENT_UPLOAD by {current_user.full_name} (income heads confirmed from profile)",
+    )
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.INCOME_HEADS_CONFIRMED,
+        actor_id=current_user.id,
+        client_id=body.client_id,
+        filing_id=filing.id,
+        details={"income_heads": income_heads_payload, "auto_confirmed": True},
+    )
+
+    # Email engagement letter
+    background_tasks.add_task(
+        _send_engagement_letter_email,
+        client_email=client.email,
+        client_name=client.full_name,
+        financial_year=body.financial_year,
+        pdf_bytes=pdf_bytes,
+    )
+
+    await db.flush()
+    mgr_id, mgr_name = await _resolve_manager_for_client(db, filing.client_id)
+    exec_name = None
+    if filing.assigned_executive_id:
+        exec_result = await db.execute(select(User).where(User.id == filing.assigned_executive_id))
+        exec_user = exec_result.scalar_one_or_none()
+        if exec_user:
+            exec_name = exec_user.full_name
+    return FilingResponse(
+        id=filing.id,
+        client_id=filing.client_id,
+        client_name=client.full_name,
+        financial_year=filing.financial_year,
+        status=filing.status,
+        assigned_executive_id=filing.assigned_executive_id,
+        assigned_executive_name=exec_name,
+        assigned_manager_id=mgr_id,
+        assigned_manager_name=mgr_name,
+        initiated_at=filing.initiated_at,
+        is_tax_paid=filing.is_tax_paid,
+        tax_paid_at=filing.tax_paid_at,
+        professional_fee=filing.professional_fee,
+        no_fees_applicable=filing.no_fees_applicable,
+        engagement_accepted_at=filing.engagement_accepted_at,
+        created_at=filing.created_at,
+        updated_at=filing.updated_at,
+    )
 
 
 # ─── POST /filings/{filing_id}/confirm-income-heads ─────────
@@ -667,6 +975,9 @@ async def list_filings(
             if exec_user:
                 exec_name = exec_user.full_name
 
+        # Get manager name
+        mgr_id, mgr_name = await _resolve_manager_for_client(db, filing.client_id)
+
         items.append(
             FilingResponse(
                 id=filing.id,
@@ -676,6 +987,8 @@ async def list_filings(
                 status=filing.status,
                 assigned_executive_id=filing.assigned_executive_id,
                 assigned_executive_name=exec_name,
+                assigned_manager_id=mgr_id,
+                assigned_manager_name=mgr_name,
                 initiated_at=filing.initiated_at,
                 onboarding_completed_at=filing.onboarding_completed_at,
                 documents_submitted_at=filing.documents_submitted_at,
@@ -751,6 +1064,7 @@ async def get_filing(
         )
         pending_executive_assignment = exec_assign_result.scalar_one_or_none() is None
 
+    mgr_id, mgr_name = await _resolve_manager_for_client(db, filing.client_id)
     return FilingResponse(
         id=filing.id,
         client_id=filing.client_id,
@@ -759,6 +1073,8 @@ async def get_filing(
         status=filing.status,
         assigned_executive_id=filing.assigned_executive_id,
         assigned_executive_name=exec_name,
+        assigned_manager_id=mgr_id,
+        assigned_manager_name=mgr_name,
         initiated_at=filing.initiated_at,
         onboarding_completed_at=filing.onboarding_completed_at,
         documents_submitted_at=filing.documents_submitted_at,
@@ -833,6 +1149,13 @@ async def transition_filing(
     if is_already_in_target:
         client_result = await db.execute(select(User).where(User.id == filing.client_id))
         client = client_result.scalar_one_or_none()
+        mgr_id, mgr_name = await _resolve_manager_for_client(db, filing.client_id)
+        exec_name = None
+        if filing.assigned_executive_id:
+            exec_result = await db.execute(select(User).where(User.id == filing.assigned_executive_id))
+            exec_user = exec_result.scalar_one_or_none()
+            if exec_user:
+                exec_name = exec_user.full_name
         return FilingResponse(
             id=filing.id,
             client_id=filing.client_id,
@@ -840,6 +1163,9 @@ async def transition_filing(
             financial_year=filing.financial_year,
             status=filing.status,
             assigned_executive_id=filing.assigned_executive_id,
+            assigned_executive_name=exec_name,
+            assigned_manager_id=mgr_id,
+            assigned_manager_name=mgr_name,
             initiated_at=filing.initiated_at,
             onboarding_completed_at=filing.onboarding_completed_at,
             documents_submitted_at=filing.documents_submitted_at,
@@ -939,12 +1265,22 @@ async def transition_filing(
                 cta_label="Upload Invoice",
             )
 
+    mgr_id, mgr_name = await _resolve_manager_for_client(db, filing.client_id)
+    exec_name = None
+    if filing.assigned_executive_id:
+        exec_result = await db.execute(select(User).where(User.id == filing.assigned_executive_id))
+        exec_user = exec_result.scalar_one_or_none()
+        if exec_user:
+            exec_name = exec_user.full_name
     return FilingResponse(
         id=filing.id,
         client_id=filing.client_id,
         financial_year=filing.financial_year,
         status=filing.status,
         assigned_executive_id=filing.assigned_executive_id,
+        assigned_executive_name=exec_name,
+        assigned_manager_id=mgr_id,
+        assigned_manager_name=mgr_name,
         initiated_at=filing.initiated_at,
         onboarding_completed_at=filing.onboarding_completed_at,
         documents_submitted_at=filing.documents_submitted_at,
@@ -990,12 +1326,22 @@ async def halt_filing(
         ip_address=request.client.host if request.client else None,
     )
 
+    mgr_id, mgr_name = await _resolve_manager_for_client(db, filing.client_id)
+    exec_name = None
+    if filing.assigned_executive_id:
+        exec_result = await db.execute(select(User).where(User.id == filing.assigned_executive_id))
+        exec_user = exec_result.scalar_one_or_none()
+        if exec_user:
+            exec_name = exec_user.full_name
     return FilingResponse(
         id=filing.id,
         client_id=filing.client_id,
         financial_year=filing.financial_year,
         status=filing.status,
         assigned_executive_id=filing.assigned_executive_id,
+        assigned_executive_name=exec_name,
+        assigned_manager_id=mgr_id,
+        assigned_manager_name=mgr_name,
         initiated_at=filing.initiated_at,
         is_tax_paid=filing.is_tax_paid,
         tax_paid_at=filing.tax_paid_at,

@@ -161,6 +161,48 @@ class ClientRegistrationResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# ─── Client Creation by Manager/Partner ──────────────────────
+class ClientCreateRequest(BaseModel):
+    email: EmailStr
+    full_name: str = Field(..., min_length=1, max_length=255)
+    phone_number: Optional[str] = Field(None, max_length=20)
+    city: Optional[str] = Field(None, max_length=100)
+    manager_id: Optional[UUID] = Field(None, description="Assign to this manager (used when Partner creates a client)")
+
+    # Income Heads
+    salary: bool = Field(False)
+    esop: bool = Field(False)
+    rental_income: bool = Field(False)
+    more_than_2_properties: bool = Field(False)
+    capital_gain_shares: bool = Field(False)
+    capital_gain_land: bool = Field(False)
+    business_profession: bool = Field(False)
+    interest_dividend: bool = Field(False)
+    foreign_assets: bool = Field(False)
+    any_other: bool = Field(False)
+    any_other_text: Optional[str] = Field(None, max_length=255)
+
+    @field_validator("phone_number")
+    @classmethod
+    def validate_phone_number(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            digits = v.strip()
+            if not digits.isdigit() or len(digits) != 10:
+                raise ValueError("Phone number must be exactly 10 digits")
+        return v
+
+
+class ClientCreateResponse(BaseModel):
+    id: UUID
+    email: str
+    full_name: str
+    account_status: str
+    default_password: str
+    message: str = "Client account created successfully."
+
+    model_config = {"from_attributes": True}
+
+
 # ─── Client Activation / Rejection ──────────────────────────
 class ClientActivationRequest(BaseModel):
     client_id: UUID
@@ -249,6 +291,8 @@ class ClientProfileResponse(BaseModel):
     no_fees_applicable: bool = False
     partner_tag_id: Optional[UUID] = None
     partner_tag_name: Optional[str] = None
+    created_by_staff_id: Optional[UUID] = None
+    created_by_staff_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -271,8 +315,9 @@ class ClientListItem(BaseModel):
     active_filing_years: list[str] = []
     current_state: Optional[str] = None
     last_updated: Optional[datetime] = None
-    # Onboarding-form submission timestamp (null = client hasn't submitted the form yet)
     form_submitted_at: Optional[datetime] = None
+    created_by_staff_id: Optional[UUID] = None
+    created_by_staff_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

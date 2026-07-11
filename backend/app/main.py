@@ -513,6 +513,8 @@ async def _sync_new_columns():
         ("client_profiles", "whatsapp_opt_in", "BOOLEAN NOT NULL", "'true'"),
         # Elevated manager flag
         ("users", "is_elevated", "BOOLEAN NOT NULL", "'false'"),
+        # Staff-created client tracking
+        ("client_profiles", "created_by_staff_id", "UUID", None),
     ]
 
     try:

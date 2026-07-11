@@ -23,6 +23,11 @@ class FilingInitiateRequest(BaseModel):
         return v
 
 
+class FilingInitiateForClientRequest(BaseModel):
+    client_id: UUID
+    financial_year: str = Field(..., pattern=r"^\d{4}-\d{4}$")
+
+
 class FilingResponse(BaseModel):
     id: UUID
     client_id: UUID
@@ -31,6 +36,8 @@ class FilingResponse(BaseModel):
     status: FilingStatus
     assigned_executive_id: Optional[UUID] = None
     assigned_executive_name: Optional[str] = None
+    assigned_manager_id: Optional[UUID] = None
+    assigned_manager_name: Optional[str] = None
     initiated_at: datetime
     onboarding_completed_at: Optional[datetime] = None
     documents_submitted_at: Optional[datetime] = None

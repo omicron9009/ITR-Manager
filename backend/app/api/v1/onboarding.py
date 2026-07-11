@@ -456,3 +456,137 @@ async def submit_onboarding_form(
 
     await db.flush()
     return {"message": "Onboarding form submitted successfully"}
+
+
+# ═══════════════════════════════════════════════════════════════
+# FORM SUBMISSION ON BEHALF OF CLIENT (Manager / Partner)
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.post("/form/{client_id}/submit", response_model=dict)
+async def submit_onboarding_form_for_client(
+    client_id: UUID,
+    body: OnboardingFormSubmitRequest,
+    current_user: User = Depends(get_current_manager_or_partner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Submit or update the onboarding form on behalf of a client (Manager/Partner)."""
+    await enforce_client_access(db, current_user, client_id)
+
+    # Verify client exists and is active
+    client_result = await db.execute(
+        select(User).where(User.id == client_id, User.role == UserRole.CLIENT)
+    )
+    client_user = client_result.scalar_one_or_none()
+    if not client_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    if client_user.account_status.value != "ACTIVE":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Client account is in '{client_user.account_status.value}' state. Cannot submit onboarding.",
+        )
+
+    result = await db.execute(
+        select(ClientProfile).where(ClientProfile.user_id == client_id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client profile not found")
+
+    # ── Validate required fields ──
+    required_fields_result = await db.execute(
+        select(OnboardingFormField).where(
+            OnboardingFormField.is_active == True,
+            OnboardingFormField.is_required == True,
+        )
+    )
+    required_fields = required_fields_result.scalars().all()
+
+    missing_fields = []
+    for field in required_fields:
+        value = body.form_data.get(field.field_key)
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            missing_fields.append(field.field_label)
+
+    if missing_fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"The following required fields are missing or empty: {', '.join(missing_fields)}",
+        )
+
+    # ── Validate dropdown values are in allowed options ──
+    dropdown_fields_result = await db.execute(
+        select(OnboardingFormField).where(
+            OnboardingFormField.is_active == True,
+            OnboardingFormField.field_type == FormFieldType.DROPDOWN,
+        )
+    )
+    dropdown_fields = dropdown_fields_result.scalars().all()
+
+    for field in dropdown_fields:
+        value = body.form_data.get(field.field_key)
+        if value is not None and field.field_options and value not in field.field_options:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid value '{value}' for field '{field.field_label}'. Allowed: {', '.join(field.field_options)}",
+            )
+
+    # ── Validate FILE fields reference actual uploaded stored_files ──
+    file_fields_result = await db.execute(
+        select(OnboardingFormField).where(
+            OnboardingFormField.is_active == True,
+            OnboardingFormField.field_type == FormFieldType.FILE,
+        )
+    )
+    file_fields = file_fields_result.scalars().all()
+
+    for field in file_fields:
+        value = body.form_data.get(field.field_key)
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            continue
+        try:
+            file_uuid = UUID(value)
+        except (ValueError, AttributeError):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Field '{field.field_label}' must be a valid file ID.",
+            )
+        # For manager/partner submissions, accept files uploaded by the staff member OR the client
+        file_result = await db.execute(
+            select(StoredFile).where(
+                StoredFile.id == file_uuid,
+                StoredFile.uploaded_by.in_([current_user.id, client_id]),
+            )
+        )
+        if not file_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"File for field '{field.field_label}' not found.",
+            )
+
+    # Update profile with form data
+    profile.form_data = body.form_data
+    profile.form_submitted_at = datetime.now(timezone.utc)
+
+    # Extract key fields if present
+    if "pan_number" in body.form_data:
+        profile.pan_number = body.form_data["pan_number"]
+    if "aadhaar_number" in body.form_data:
+        profile.aadhaar_number = body.form_data["aadhaar_number"]
+    if "date_of_birth" in body.form_data:
+        from dateutil.parser import parse
+        try:
+            profile.date_of_birth = parse(body.form_data["date_of_birth"]).date()
+        except (ValueError, TypeError):
+            pass
+    if "contact_number" in body.form_data:
+        profile.contact_number = body.form_data["contact_number"]
+    if "address" in body.form_data:
+        profile.address = body.form_data["address"]
+    if "income_type" in body.form_data:
+        profile.income_type = body.form_data["income_type"]
+    if "bank_account_details" in body.form_data:
+        profile.bank_account_details = body.form_data["bank_account_details"]
+
+    await db.flush()
+    return {"message": f"Onboarding form submitted for {client_user.full_name}"}

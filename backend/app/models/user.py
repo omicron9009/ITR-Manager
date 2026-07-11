@@ -38,7 +38,7 @@ class User(Base):
     # Relationships
     pan_document = relationship("StoredFile", foreign_keys=[pan_document_id])
     activator = relationship("User", remote_side=[id], foreign_keys=[activated_by])
-    client_profile = relationship("ClientProfile", back_populates="user", uselist=False)
+    client_profile = relationship("ClientProfile", back_populates="user", uselist=False, foreign_keys="[ClientProfile.user_id]")
     income_heads = relationship("ClientIncomeHeads", back_populates="user", uselist=False)
     uploaded_files = relationship("StoredFile", foreign_keys="[StoredFile.uploaded_by]", back_populates="uploader")
     filings = relationship("ITRFiling", foreign_keys="[ITRFiling.client_id]", back_populates="client")

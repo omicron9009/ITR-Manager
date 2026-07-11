@@ -225,13 +225,17 @@ async def assign_executive(
             detail="This client is not assigned to you",
         )
 
-    # Auto-create manager-client link if not present (for Partner bypass)
-    await ensure_manager_client_link(
-        db=db,
-        manager_id=mgr_assignment.manager_id,
-        client_id=body.client_id,
-        assigned_by=current_user.id,
-    )
+    # Verify executive belongs to the same manager as the client
+    if mgr_assignment.manager_id != mgr_client.manager_id:
+        exec_mgr_result = await db.execute(select(User.full_name).where(User.id == mgr_assignment.manager_id))
+        exec_mgr_name = exec_mgr_result.scalar() or "Unknown"
+        client_mgr_result = await db.execute(select(User.full_name).where(User.id == mgr_client.manager_id))
+        client_mgr_name = client_mgr_result.scalar() or "Unknown"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Executive belongs to manager '{exec_mgr_name}', but client is assigned to manager '{client_mgr_name}'. "
+                   f"Reassign the client to '{exec_mgr_name}' first, or choose an executive under '{client_mgr_name}'.",
+        )
 
     assignment = await assign_executive_to_client(
         db=db,

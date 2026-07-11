@@ -243,3 +243,128 @@ async def _get_partner(db: AsyncSession) -> Optional[User]:
         select(User).where(User.role == UserRole.PARTNER, User.is_active == True)
     )
     return result.scalar_one_or_none()
+
+
+async def create_client_by_staff(
+    db: AsyncSession,
+    email: str,
+    full_name: str,
+    password_hash: str,
+    created_by: User,
+    phone_number: Optional[str] = None,
+    income_heads: Optional[dict] = None,
+    city: Optional[str] = None,
+    manager_id: Optional["UUID"] = None,
+) -> User:
+    """Create a client account on behalf of a manager/partner.
+
+    The client is auto-activated with referral_source=DIRECTED_BY_FIRM.
+    If the creator is a Manager, the client is auto-assigned to that manager.
+    If the creator is a Partner and manager_id is provided, the client is assigned to that manager.
+    """
+    from app.enums import ReferralSource
+    from app.models.manager_client_assignment import ManagerClientAssignment
+
+    existing = await db.execute(select(User).where(User.email == email))
+    if existing.scalar_one_or_none():
+        from fastapi import HTTPException, status
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists.",
+        )
+
+    now = datetime.now(timezone.utc)
+    user = User(
+        email=email,
+        full_name=full_name,
+        password_hash=password_hash,
+        phone_number=phone_number,
+        role=UserRole.CLIENT,
+        account_status=AccountStatus.ACTIVE,
+        activated_at=now,
+        activated_by=created_by.id,
+    )
+    db.add(user)
+    await db.flush()
+
+    profile = ClientProfile(
+        user_id=user.id,
+        referral_source=ReferralSource.DIRECTED_BY_FIRM,
+        city=city,
+        created_by_staff_id=created_by.id,
+    )
+    db.add(profile)
+
+    if income_heads:
+        heads = ClientIncomeHeads(user_id=user.id, **income_heads)
+    else:
+        heads = ClientIncomeHeads(user_id=user.id)
+    db.add(heads)
+
+    await record_audit_event(
+        db=db,
+        event_type=AuditEventType.ACCOUNT_REGISTERED,
+        actor_id=created_by.id,
+        client_id=user.id,
+        details={
+            "email": email,
+            "full_name": full_name,
+            "created_by": created_by.full_name,
+            "created_by_role": created_by.role.value,
+        },
+    )
+
+    # Create MinIO directory
+    ensure_bucket_exists()
+    create_client_directory(str(user.id), full_name)
+
+    # Auto-assign to manager
+    if created_by.role == UserRole.MANAGER:
+        assignment = ManagerClientAssignment(
+            manager_id=created_by.id,
+            client_id=user.id,
+            assigned_by=created_by.id,
+        )
+        db.add(assignment)
+    elif created_by.role == UserRole.PARTNER and manager_id:
+        # Validate the manager exists, is active, and has the MANAGER role
+        mgr_result = await db.execute(
+            select(User).where(User.id == manager_id, User.role == UserRole.MANAGER)
+        )
+        manager = mgr_result.scalar_one_or_none()
+        if not manager:
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Specified manager not found or is not a manager.",
+            )
+        if manager.account_status != AccountStatus.ACTIVE:
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Specified manager account is not active.",
+            )
+        assignment = ManagerClientAssignment(
+            manager_id=manager_id,
+            client_id=user.id,
+            assigned_by=created_by.id,
+        )
+        db.add(assignment)
+
+    # Notify partner about new client
+    partner = await _get_partner(db)
+    if partner and partner.id != created_by.id:
+        await create_notification(
+            db=db,
+            user_id=partner.id,
+            title=f"{full_name} — New Client Created",
+            message=f"A new client ({full_name}) has been created by {created_by.full_name} ({created_by.role.value}).",
+            related_client_id=user.id,
+            client_name=full_name,
+            action_url_path=f"/clients/{user.id}",
+            cta_label="View Client",
+            extra_details={"Email": email, "Created By": created_by.full_name},
+        )
+
+    await db.flush()
+    return user
