@@ -27,7 +27,13 @@ async def list_notifications(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get notifications for the current user."""
+    """Get notifications for the current user.
+
+    Each response item includes a `reminder_type` field (nullable). It is
+    populated for notifications created by the reminders subsystem and NULL
+    for regular notifications — the frontend can filter on it to render a
+    dedicated "Reminders" tab without a separate endpoint.
+    """
     items, total, unread_count = await get_user_notifications(
         db=db,
         user_id=current_user.id,
@@ -36,8 +42,14 @@ async def list_notifications(
         unread_only=unread_only,
     )
 
+    responses: list[NotificationResponse] = []
+    for notification, reminder_type in items:
+        resp = NotificationResponse.model_validate(notification)
+        resp.reminder_type = reminder_type
+        responses.append(resp)
+
     return NotificationListResponse(
-        items=[NotificationResponse.model_validate(n) for n in items],
+        items=responses,
         total=total,
         unread_count=unread_count,
     )

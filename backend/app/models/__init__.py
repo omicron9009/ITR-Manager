@@ -29,3 +29,5 @@ from app.models.filing_other_doc import FilingOtherDoc  # noqa: F401
 from app.models.internal_working_doc import InternalWorkingDoc  # noqa: F401
 from app.models.viewer_completed_queue import ViewerCompletedQueue  # noqa: F401
 from app.models.whatsapp_config import WhatsAppConfig  # noqa: F401
+from app.models.reminder_config import ReminderConfig  # noqa: F401
+from app.models.reminder_dispatch_log import ReminderDispatchLog  # noqa: F401

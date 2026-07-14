@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
     await _ensure_perf_indexes()
     await _seed_admin_user()
     await _seed_dashboard_user()
+    await _seed_reminder_configs()
     await init_cache()
     await _auto_bootstrap_whatsapp()
     await _backfill_whatsapp_opt_in()
@@ -77,6 +78,15 @@ async def lifespan(app: FastAPI):
             settings.WHATSAPP_WATCHDOG_INTERVAL_SECONDS,
         )
 
+    # ── Reminders worker background task ──
+    reminders_task = None
+    if settings.REMINDERS_WORKER_ENABLED:
+        reminders_task = asyncio.create_task(_reminders_worker_loop())
+        logger.info(
+            "Reminders worker started (interval=%ds).",
+            settings.REMINDERS_WORKER_INTERVAL_SECONDS,
+        )
+
     yield
     # ── Shutdown ──
     if watchdog_task is not None:
@@ -86,6 +96,13 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         logger.info("WhatsApp watchdog stopped.")
+    if reminders_task is not None:
+        reminders_task.cancel()
+        try:
+            await reminders_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Reminders worker stopped.")
     await close_cache()
 
 
@@ -381,6 +398,7 @@ async def _sync_pg_enums():
         AccountStatus, FilingStatus, DocumentStatus, ComputationStatus,
         CompletedDocType, CompletedDocStatus, FormFieldType, AuditEventType, NotificationChannel, UserRole,
         TagType, ReferralSource, IncomeHeadCategory, DocSubCategory, TextFieldStatus, InternalWorkingDocType,
+        ReminderType,
     )
     enum_map = {
         "user_role": UserRole,
@@ -399,6 +417,7 @@ async def _sync_pg_enums():
         "doc_sub_category": DocSubCategory,
         "text_field_status": TextFieldStatus,
         "internal_working_doc_type": InternalWorkingDocType,
+        "reminder_type": ReminderType,
     }
 
     try:
@@ -936,6 +955,67 @@ async def _sync_new_columns():
                 )
                 logger.info("Created table 'filing_text_fields'")
 
+            # ─── Reminders subsystem ─────────────────────────────────────
+            # Enum type: values are auto-synced by _sync_pg_enums, but for a
+            # fresh DB we need at least one seed value so CREATE TABLE below
+            # can reference the type. Additional values are added on later
+            # startups by ALTER TYPE ... ADD VALUE.
+            reminder_enum_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_type WHERE typname = 'reminder_type'"
+            )
+            if not reminder_enum_exists:
+                await conn.execute(
+                    "CREATE TYPE reminder_type AS ENUM ('UNASSIGNED_CLIENT')"
+                )
+                logger.info("Created enum type 'reminder_type'")
+
+            reminder_cfg_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'reminder_configs'"
+            )
+            if not reminder_cfg_table_exists:
+                await conn.execute("""
+                    CREATE TABLE reminder_configs (
+                        id UUID PRIMARY KEY,
+                        reminder_type reminder_type NOT NULL UNIQUE,
+                        is_enabled BOOLEAN NOT NULL DEFAULT false,
+                        threshold_days INTEGER NOT NULL DEFAULT 7,
+                        repeat_interval_days INTEGER NOT NULL DEFAULT 3,
+                        max_sends INTEGER NOT NULL DEFAULT 5,
+                        channels JSONB NOT NULL DEFAULT '{"in_app": true, "email": true, "whatsapp": true}'::jsonb,
+                        custom_title VARCHAR(255),
+                        custom_message TEXT,
+                        updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """)
+                logger.info("Created table 'reminder_configs'")
+
+            reminder_log_table_exists = await conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'reminder_dispatch_logs'"
+            )
+            if not reminder_log_table_exists:
+                await conn.execute("""
+                    CREATE TABLE reminder_dispatch_logs (
+                        id UUID PRIMARY KEY,
+                        reminder_type reminder_type NOT NULL,
+                        subject_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        related_client_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                        related_filing_id UUID REFERENCES itr_filings(id) ON DELETE SET NULL,
+                        dedup_key VARCHAR(255) NOT NULL,
+                        notification_id UUID REFERENCES notifications(id) ON DELETE SET NULL,
+                        sent_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """)
+                logger.info("Created table 'reminder_dispatch_logs'")
+
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_reminder_dispatch_dedup_sent "
+                "ON reminder_dispatch_logs (dedup_key, sent_at)"
+            )
+
         finally:
             await conn.close()
 
@@ -1143,6 +1223,50 @@ async def _seed_dashboard_user():
         logger.warning(f"Dashboard user seed skipped: {e}")
 
 
+async def _seed_reminder_configs():
+    """Ensure a `reminder_configs` row exists for every `ReminderType` value.
+
+    Seeded rows are disabled by default — the Partner must explicitly enable
+    each reminder from the UI (or `PUT /api/v1/reminders/configs/{type}`).
+    Idempotent: safe to run on every startup. Never crashes startup.
+    """
+    from sqlalchemy import select, text
+
+    from app.database import AsyncSessionLocal
+    from app.enums import REMINDER_DEFAULT_LABELS, REMINDER_DEFAULT_MESSAGES, ReminderType
+    from app.models.reminder_config import ReminderConfig
+
+    try:
+        async with AsyncSessionLocal() as db:
+            # Advisory lock prevents two uvicorn workers from double-seeding.
+            await db.execute(text("SELECT pg_advisory_xact_lock(4)"))
+
+            existing_rows = (await db.execute(select(ReminderConfig.reminder_type))).all()
+            existing = {r[0] for r in existing_rows}
+
+            created = 0
+            for rt in ReminderType:
+                if rt in existing:
+                    continue
+                db.add(ReminderConfig(
+                    reminder_type=rt,
+                    is_enabled=False,
+                    threshold_days=7,
+                    repeat_interval_days=3,
+                    max_sends=5,
+                    channels={"in_app": True, "email": True, "whatsapp": True},
+                    custom_title=REMINDER_DEFAULT_LABELS.get(rt),
+                    custom_message=REMINDER_DEFAULT_MESSAGES.get(rt),
+                ))
+                created += 1
+
+            if created:
+                await db.commit()
+                logger.info(f"Seeded {created} reminder_configs row(s).")
+    except Exception as e:
+        logger.warning(f"Reminder config seed skipped: {e}")
+
+
 async def _whatsapp_watchdog_loop():
     """Background loop: poll WhatsApp session health and auto-reconnect.
 
@@ -1167,6 +1291,43 @@ async def _whatsapp_watchdog_loop():
 
         try:
             await asyncio.sleep(settings.WHATSAPP_WATCHDOG_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+
+
+async def _reminders_worker_loop():
+    """Background loop: scan for due reminders and dispatch them.
+
+    Runs every `REMINDERS_WORKER_INTERVAL_SECONDS`. Never crashes — the
+    per-evaluator failure containment lives inside `dispatch_due_reminders`;
+    this loop just handles top-level errors and cancellation.
+    """
+    from app.database import AsyncSessionLocal
+    from app.services.reminder_service import dispatch_due_reminders
+
+    initial = max(0, int(settings.REMINDERS_WORKER_INITIAL_DELAY_SECONDS))
+    if initial:
+        try:
+            await asyncio.sleep(initial)
+        except asyncio.CancelledError:
+            raise
+
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                dispatched, skipped = await dispatch_due_reminders(db)
+                if dispatched or skipped:
+                    logger.info(
+                        "Reminders worker tick: dispatched=%s skipped=%s",
+                        dispatched, skipped,
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Reminders worker tick failed: %s", e)
+
+        try:
+            await asyncio.sleep(settings.REMINDERS_WORKER_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             raise
 

@@ -18,6 +18,7 @@ from app.api.v1 import (
     notifications,
     onboarding,
     audit,
+    reminders,
     storage,
     tags,
     text_fields,
@@ -47,3 +48,4 @@ api_router.include_router(feedback.router, prefix="/feedback", tags=["Feedback"]
 api_router.include_router(internal_workings.router, prefix="/internal-workings", tags=["Internal Workings"])
 api_router.include_router(text_fields.router, prefix="/text-fields", tags=["Text Fields"])
 api_router.include_router(whatsapp.router, prefix="/whatsapp", tags=["WhatsApp"])
+api_router.include_router(reminders.router, prefix="/reminders", tags=["Reminders"])

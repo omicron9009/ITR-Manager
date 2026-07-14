@@ -321,34 +321,48 @@ async def get_user_notifications(
     page: int = 1,
     page_size: int = 20,
     unread_only: bool = False,
-) -> tuple[list[Notification], int, int]:
-    """Get notifications for a user with pagination. Returns (items, total, unread_count)."""
-    query = select(Notification).where(Notification.user_id == user_id)
+) -> tuple[list[tuple[Notification, Optional[str]]], int, int]:
+    """Get notifications for a user with pagination.
 
-    if unread_only:
-        query = query.where(Notification.is_read == False)
+    Returns ``(items, total, unread_count)`` where ``items`` is a list of
+    ``(notification, reminder_type)`` tuples. ``reminder_type`` is populated
+    via a LEFT JOIN to ``reminder_dispatch_logs`` and is None for regular
+    (non-reminder) notifications.
+    """
+    from app.models.reminder_dispatch_log import ReminderDispatchLog
 
-    # Total count
-    count_query = select(func.count()).select_from(
-        select(Notification.id).where(Notification.user_id == user_id).subquery()
-    )
+    # Total count (all notifications for the user — unread filter doesn't apply here)
+    count_query = select(func.count(Notification.id)).where(Notification.user_id == user_id)
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # Unread count
-    unread_query = select(func.count()).select_from(
-        select(Notification.id).where(
-            Notification.user_id == user_id, Notification.is_read == False
-        ).subquery()
+    # Unread count (always includes unread total regardless of `unread_only` param)
+    unread_query = select(func.count(Notification.id)).where(
+        Notification.user_id == user_id, Notification.is_read == False
     )
     unread_result = await db.execute(unread_query)
     unread_count = unread_result.scalar() or 0
 
-    # Paginated items
-    query = query.order_by(Notification.created_at.desc())
-    query = query.offset((page - 1) * page_size).limit(page_size)
-    result = await db.execute(query)
-    items = list(result.scalars().all())
+    # Paginated items — LEFT JOIN reminder_dispatch_logs to surface reminder_type.
+    # There is at most one dispatch-log row per notification_id (a reminder creates
+    # exactly one notification via `create_notification`).
+    items_query = (
+        select(Notification, ReminderDispatchLog.reminder_type)
+        .outerjoin(
+            ReminderDispatchLog,
+            ReminderDispatchLog.notification_id == Notification.id,
+        )
+        .where(Notification.user_id == user_id)
+    )
+    if unread_only:
+        items_query = items_query.where(Notification.is_read == False)
+    items_query = (
+        items_query.order_by(Notification.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    rows = (await db.execute(items_query)).all()
+    items = [(row[0], row[1]) for row in rows]
 
     return items, total, unread_count
 

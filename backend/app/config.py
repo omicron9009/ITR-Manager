@@ -118,5 +118,16 @@ class Settings(BaseSettings):
     # at runtime — exposed here so the deploy can read it from the same .env.
     WHATSAPP_OPENWA_MASTER_KEY: str = ""
 
+    # ─── Reminders subsystem ────────────────────────────────
+    # Background worker that scans for due reminders and dispatches them
+    # through the existing notification pipeline (in-app + email + WhatsApp).
+    REMINDERS_WORKER_ENABLED: bool = True
+    REMINDERS_WORKER_INTERVAL_SECONDS: int = 21600  # 6 hours
+    # Timezone used to compute India FY (Apr-Mar) and "N days" thresholds.
+    REMINDERS_TIMEZONE: str = "Asia/Kolkata"
+    # Delay before the first tick after startup (seconds). Gives other
+    # startup tasks (seed, migrations, index creation) time to settle.
+    REMINDERS_WORKER_INITIAL_DELAY_SECONDS: int = 120
+
 
 settings = Settings()
