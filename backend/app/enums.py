@@ -150,6 +150,11 @@ class AuditEventType(str, enum.Enum):
     MANAGER_DE_ELEVATED = "MANAGER_DE_ELEVATED"
     PASSWORD_RESET_REQUESTED = "PASSWORD_RESET_REQUESTED"
     PASSWORD_RESET_VIA_LINK = "PASSWORD_RESET_VIA_LINK"
+    # Reminders subsystem
+    REMINDER_CONFIG_UPDATED = "REMINDER_CONFIG_UPDATED"
+    REMINDER_CONFIG_PAUSED = "REMINDER_CONFIG_PAUSED"
+    REMINDER_CONFIG_RESUMED = "REMINDER_CONFIG_RESUMED"
+    REMINDER_SENT = "REMINDER_SENT"
 
 
 class NotificationChannel(str, enum.Enum):
@@ -286,4 +291,104 @@ VALID_FILING_TRANSITIONS: dict[FilingStatus, list[FilingStatus]] = {
         FilingStatus.FILING,
         FilingStatus.PAYMENT,
     ],
+}
+
+
+# ─── Reminders subsystem ──────────────────────────────────────
+class ReminderType(str, enum.Enum):
+    """Type of reminder — one entry per configurable rule.
+
+    New reminder types are appended here as new prompts implement them.
+    The PG enum `reminder_type` is auto-synced by `_sync_pg_enums`.
+    """
+    UNASSIGNED_CLIENT = "UNASSIGNED_CLIENT"
+    FILING_NOT_INITIATED = "FILING_NOT_INITIATED"
+    TAX_PAYMENT_PENDING = "TAX_PAYMENT_PENDING"
+    FILING_STAGNANT_PRE_FILING = "FILING_STAGNANT_PRE_FILING"
+    INVOICE_PENDING_POST_FILING = "INVOICE_PENDING_POST_FILING"
+    CLIENT_DOCS_PENDING_UPLOAD = "CLIENT_DOCS_PENDING_UPLOAD"
+    TEXT_FIELDS_PENDING_FILL = "TEXT_FIELDS_PENDING_FILL"
+    COMPUTATION_AWAITING_MANAGER_APPROVAL = "COMPUTATION_AWAITING_MANAGER_APPROVAL"
+    COMPUTATION_AWAITING_PARTNER_APPROVAL = "COMPUTATION_AWAITING_PARTNER_APPROVAL"
+    COMPUTATION_AWAITING_CLIENT_APPROVAL = "COMPUTATION_AWAITING_CLIENT_APPROVAL"
+    COMPLETED_DOCS_PENDING = "COMPLETED_DOCS_PENDING"
+    PAYMENT_NOT_MARKED_RECEIVED = "PAYMENT_NOT_MARKED_RECEIVED"
+    FEEDBACK_NOT_SUBMITTED = "FEEDBACK_NOT_SUBMITTED"
+
+
+# Human-friendly default titles used when a config has no custom_title override.
+REMINDER_DEFAULT_LABELS: dict[ReminderType, str] = {
+    ReminderType.UNASSIGNED_CLIENT: "Client not fully assigned",
+    ReminderType.FILING_NOT_INITIATED: "Filing not yet initiated",
+    ReminderType.TAX_PAYMENT_PENDING: "Tax payment confirmation pending",
+    ReminderType.FILING_STAGNANT_PRE_FILING: "Filing not progressing",
+    ReminderType.INVOICE_PENDING_POST_FILING: "Invoice upload pending",
+    ReminderType.CLIENT_DOCS_PENDING_UPLOAD: "Documents pending upload",
+    ReminderType.TEXT_FIELDS_PENDING_FILL: "Information fields pending",
+    ReminderType.COMPUTATION_AWAITING_MANAGER_APPROVAL: "Computation awaiting Manager approval",
+    ReminderType.COMPUTATION_AWAITING_PARTNER_APPROVAL: "Computation awaiting Partner approval",
+    ReminderType.COMPUTATION_AWAITING_CLIENT_APPROVAL: "Computation awaiting your approval",
+    ReminderType.COMPLETED_DOCS_PENDING: "Completed documents pending",
+    ReminderType.PAYMENT_NOT_MARKED_RECEIVED: "Payment not marked received",
+    ReminderType.FEEDBACK_NOT_SUBMITTED: "We'd love your feedback",
+}
+
+
+# Default message templates. Support Python `.format()` placeholders like
+# `{client_name}`, `{fy}`, `{days}`, `{missing}`, `{filing_status}`.
+REMINDER_DEFAULT_MESSAGES: dict[ReminderType, str] = {
+    ReminderType.UNASSIGNED_CLIENT: (
+        "Client {client_name} was activated {days} day(s) ago but is missing: {missing}. "
+        "Please complete the assignment so filing work can begin."
+    ),
+    ReminderType.FILING_NOT_INITIATED: (
+        "Hi {client_name}, your account has been active for {days} day(s) but you haven't "
+        "initiated your ITR filing for FY {fy} yet. Please start the filing to receive your "
+        "document checklist."
+    ),
+    ReminderType.TAX_PAYMENT_PENDING: (
+        "Hi {client_name}, your ITR computation for FY {fy} was approved {days} day(s) ago but "
+        "we haven't received your tax payment confirmation yet. Please pay the tax and confirm, "
+        "or let us know if a refund is expected."
+    ),
+    ReminderType.FILING_STAGNANT_PRE_FILING: (
+        "Filing for {client_name} (FY {fy}) is in {filing_status} with all documents approved but "
+        "hasn't progressed for {days} day(s). Please advance it toward FILING."
+    ),
+    ReminderType.INVOICE_PENDING_POST_FILING: (
+        "Filing for {client_name} (FY {fy}) entered FILING {days} day(s) ago but the invoice "
+        "hasn't been uploaded and Partner-approved yet."
+    ),
+    ReminderType.CLIENT_DOCS_PENDING_UPLOAD: (
+        "Hi {client_name}, your filing for FY {fy} is waiting on document uploads for "
+        "{days} day(s). Please complete the checklist to move forward."
+    ),
+    ReminderType.TEXT_FIELDS_PENDING_FILL: (
+        "Hi {client_name}, we need some information from you for your FY {fy} filing. "
+        "There are pending fields waiting for {days} day(s)."
+    ),
+    ReminderType.COMPUTATION_AWAITING_MANAGER_APPROVAL: (
+        "Computation for {client_name} (FY {fy}) was uploaded {days} day(s) ago and is waiting "
+        "for your review."
+    ),
+    ReminderType.COMPUTATION_AWAITING_PARTNER_APPROVAL: (
+        "Computation for {client_name} (FY {fy}) was Manager-approved {days} day(s) ago and is "
+        "awaiting Partner sign-off."
+    ),
+    ReminderType.COMPUTATION_AWAITING_CLIENT_APPROVAL: (
+        "Hi {client_name}, your ITR computation for FY {fy} was Partner-approved {days} day(s) "
+        "ago and is waiting for your review."
+    ),
+    ReminderType.COMPLETED_DOCS_PENDING: (
+        "Filing for {client_name} (FY {fy}) has been in FILING for {days} day(s). "
+        "Pending completed docs: {missing_docs}."
+    ),
+    ReminderType.PAYMENT_NOT_MARKED_RECEIVED: (
+        "Filing for {client_name} (FY {fy}) has been in PAYMENT for {days} day(s) but the "
+        "payment received flag is still not set."
+    ),
+    ReminderType.FEEDBACK_NOT_SUBMITTED: (
+        "Hi {client_name}, your FY {fy} filing was completed {days} day(s) ago. "
+        "We'd appreciate a quick rating so we can serve you better next year."
+    ),
 }
